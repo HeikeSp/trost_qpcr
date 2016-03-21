@@ -1,0 +1,668 @@
+---
+title: "Analysis of qRT-PCR data from TROST breeder trials"
+author: "Heike Sprenger"
+date: "Thursday, March 17, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 4
+---
+
+# Set working directory  
+```{r set working directory}
+getwd()
+setwd("D:/work/repos/trost_qpcr/")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+load("qpcr_data_breeder.RData")
+```
+
+
+# Source R functions
+```{r source R functions}
+source("../functions/colors.R")
+source("../functions/func_prep_pca.R")
+source("../functions/func_pca_plots.R")
+```
+
+
+# load sample information
+```{r load sample information}
+samplelist <- read.table("input/samplelist_breeder.txt", header=TRUE, sep="\t")
+
+# # add factor cultivation to samplelist
+# #cultivation <- rep("field", 356)
+# #cultivation[which(samplelist$trial %in% c("mpi_pruef1", "mpi_pruef3"))] <- "pot"
+# #samplelist <- cbind(samplelist, cultivation)
+# 
+# levels(samplelist$cultivation)
+# 
+# samplelist$trial
+# cols_trial_ordered <- cols_trial[c(4:6, 1, 3)]
+# pie(1:5, col=cols_trial_ordered, cols_trial_ordered)
+# 
+# samplelist$subspecies_id2 <- as.factor(samplelist$subspecies_id)
+# levels(samplelist$subspecies_id2)[1:4] <- c("Desiree", "Alegria", "Milva", "Saturna")
+# 
+# write.table(samplelist, "../output/samplelist.txt", sep="\t")
+```
+
+
+# Load primer info
+```{r load primer info}
+primer_info <- read.table("input/primer_info_breeder.txt", header=TRUE, sep="\t")
+```
+
+
+
+### Load qpcr raw data (after cleaning) and modify them
+```{r load data}
+rawdata <- read.table("input/results_final_breeder.txt", header = T, sep="\t", check.names = F)
+
+# replace Undetermined Ct values by 40
+undetermined_idx <- which(rawdata$Ct == "Undetermined")
+rawdata$Ct <- as.numeric(as.character(rawdata$Ct))
+rawdata$Ct[undetermined_idx] <- 40
+
+# replace problematic Ct values by NA
+peak_ok_idx <- which(rawdata$peak_comment == "ok")
+rawdata_cleaned <- rawdata
+rawdata_cleaned$Ct[-peak_ok_idx] <- NA
+hist(rawdata_cleaned$Ct)
+
+table(rawdata_cleaned$primer_name)
+
+# order by DMT id
+rawdata_cleaned <- rawdata_cleaned[order(rawdata_cleaned$sample_id), ]
+
+# merge with primer info
+rawdata_cleaned_merge <- merge(rawdata_cleaned, primer_info, by = "primer_name")
+
+# extract table with sample_id, DMT, and Ct value
+rawdata_cleaned_values <- rawdata_cleaned_merge[,c(3,14,10)]
+head(rawdata_cleaned_values)
+
+# sample_id in rows, DMT in columns
+rawdata_cleaned_values_cast <- cast(rawdata_cleaned_values, sample_id ~ DMT, value = "Ct")
+
+rownames(rawdata_cleaned_values_cast) <- rawdata_cleaned_values_cast$sample_id
+rawdata_cleaned_ct <- rawdata_cleaned_values_cast[,-1]
+dim(rawdata_cleaned_ct)
+# 204 samples, 47 genes
+
+# columns with HK genes
+HK_index <- which(colnames(rawdata_cleaned_ct) %in% c("PGSC0003DMT400030611", 
+                                                      "PGSC0003DMT400068116", 
+                                                      "PGSC0003DMT400037585", 
+                                                      "PGSC0003DMT400080569"))
+
+# values without HK genes
+rawdata_cleaned_ct_woHK <-rawdata_cleaned_ct[,-HK_index]
+dim(rawdata_cleaned_ct_woHK)
+# 204 samples, 43 genes
+
+# values of HK genes
+rawdata_cleaned_ct_HK <- rawdata_cleaned_ct[,HK_index]
+# heatmap
+heatmap.2(as.matrix(rawdata_cleaned_ct_HK),
+          labCol = colnames(rawdata_cleaned_ct_HK),
+          srtCol = 45, cexCol = 1)
+
+#write.table(colnames(rawdata_cleaned_ct), "../output/PGSC_DMT_identifier_qpcr_marker_HK.txt", sep="\t")
+```
+
+
+# functional annotation
+```{r functional annotation}
+assoc_pgsc <- read.table("../trost_transcriptomics/data/PGSC_DM_v3.4_g2t2c2p2func_edit.txt", sep="\t")
+colnames(assoc_pgsc) <- c("pgsc_dmg", "pgsc_dmt", "pgsc_dmc", "pgsc_dmp", "func")
+head(assoc_pgsc)
+
+colnames(rawdata_cleaned_ct_woHK)
+assoc_pgsc_dmt_idx <- which(assoc_pgsc$pgsc_dmt %in% colnames(rawdata_cleaned_ct_woHK))
+assoc_pgsc_part <- assoc_pgsc[assoc_pgsc_dmt_idx,]
+head(assoc_pgsc_part)
+
+write.table(assoc_pgsc_part, "output/assoc_pgsc_part.txt", sep="\t")
+```
+
+
+# plot ct values
+```{r plot ct values}
+# boxplot of all ct-values vs. genes, first 4 are HG genes
+# cols_47_genes <- rep("lightblue", 47)
+# cols_47_genes[HK_index] <- "grey"
+# boxplot.matrix(rawdata_cleaned_ct, use.cols = TRUE, col = cols_47_genes, las = 2, cex.lab = 0.8)
+
+# plot of HK gene 1 vs. HK gene 2
+plot(rawdata_cleaned_ct[,HK_index[1]], rawdata_cleaned_ct[,HK_index[2]])
+
+#class(rawdata_cleaned_ct)
+p <- ggplot(as.data.frame(rawdata_cleaned_ct), aes(PGSC0003DMT400030611, PGSC0003DMT400080569))
+p + geom_point(alpha =1/3, size=5) 
+
+# histogram of ct-values per gene
+pdf("figures/hist_rawdata_cleaned_ct.pdf")
+for (i in 1:43){
+hist(rawdata_cleaned_ct_woHK[,i], breaks=30, col="grey", main=colnames(rawdata_cleaned_ct_woHK)[i])
+}
+dev.off()
+
+# pairs plot of first 10 genes
+pairs(rawdata_cleaned_ct_woHK[,1:10])
+```
+
+
+# calc 2^-deltaCt
+```{r calc 2^-deltaCt}
+# mean of 4 housekeeping genes per sample
+housekeeping_mean_all <- apply(rawdata_cleaned_ct_HK, 1, mean, na.rm=TRUE)
+
+# without HK4 !
+# HK_index_part <- which(colnames(rawdata_cleaned_ct) %in% c("PGSC0003DMT400068117", 
+#                                      "PGSC0003DMT400037585", 
+#                                      "PGSC0003DMT400080569"))
+# housekeeping_mean <- apply(rawdata_cleaned_ct[,HK_index_part], 1, mean)
+
+# calculate delta Ct: CT_gene - mean(CT_HK)
+delta_ct <- matrix(1, nrow=nrow(rawdata_cleaned_ct_woHK), ncol=ncol(rawdata_cleaned_ct_woHK))
+colnames(delta_ct) <- colnames(rawdata_cleaned_ct_woHK)
+rownames(delta_ct) <- rownames(rawdata_cleaned_ct_woHK)
+
+for (i in 1:nrow(rawdata_cleaned_ct_woHK))
+    {
+  for (j in 1:ncol(rawdata_cleaned_ct_woHK))
+    {
+    delta_ct[i,j] <- rawdata_cleaned_ct_woHK[i,j]-housekeeping_mean_all[i]
+    }
+  }
+
+# calculate 2 to the power of minus delta Ct
+two_minus_delta_ct <- 2^-(delta_ct)
+hist(two_minus_delta_ct, breaks=50, col="grey")
+
+apply(two_minus_delta_ct, 2, max, na.rm=T)
+
+# log transform normalized values (2 to the power of minus delta Ct)
+log_norm_ct <- log10(two_minus_delta_ct)
+hist(log_norm_ct, col="grey", breaks=50)
+# low values correpond to low expression in comparison to HK genes (e.g. CT 40)
+# high values correpond to high expression in comparison to HK genes (e.g. CT 20)
+
+write.table(log_norm_ct, "output/log_norm_ct.txt", sep="\t")
+
+log2_norm_ct <- log2(two_minus_delta_ct)
+log2_norm_ct[1:5,1:5]
+two_minus_delta_ct[1:5,1:5]
+
+
+# heatmap of two_minus_delta_ct and log2_norm_ct
+my_palette <- colorRampPalette(c("white", "red"))(n = 199)
+col_breaks <- c(seq(0, 3, length=100), 
+                seq(3.1, 100, length=100))
+
+heatmap.2(as.matrix(two_minus_delta_ct), trace = "none",
+          labCol = colnames(two_minus_delta_ct),
+          labRow = rownames(two_minus_delta_ct),
+          col = my_palette, breaks = col_breaks)
+
+my_palette <- colorRampPalette(c("blue","white", "red"))(n = 299)
+col_breaks <- c(seq(-20, -3.1, length=100), 
+                seq(-3, 3, length=100),
+                seq(3.1, 20, length=100))
+
+heatmap.2(as.matrix(log2_norm_ct), trace = "none",
+          labCol = colnames(log2_norm_ct),
+          labRow = rownames(log2_norm_ct),
+          col = my_palette, breaks = col_breaks)
+```
+
+
+# PCA
+```{r pca}
+log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct, scale_method = "pareto", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_none_rnipals <- func_prep_pca(log_norm_ct, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "ppca")
+
+
+# export completeObs for later use by RandomForest
+#write.table(log_norm_ct_none_rnipals@completeObs, "output/log_norm_ct_none_rnipals_completeObs.txt", sep="\t")
+```
+
+
+### PCA plots
+```{r PCA plots}
+pdf("figures/breeder_pca_log_norm_ct.pdf")
+# no scaling, rnipals
+# trial
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, "trial", 19, "trial effect (no scaling, rnipals)")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist, "trial", 19, 1, 
+              "bottomright", 0.8, maintext="trial effect (no scaling, rnipals)")
+
+# cultivar
+palette(rainbow(34))
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, "cultivar", 19, "cultivar effect (no scaling, rnipals)")
+
+plot(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,3], col=samplelist$cultivar, pch=19)
+text(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,3], labels=samplelist$cultivar, cex=0.7)
+
+plot(log_norm_ct_none_rnipals@scores[,2], log_norm_ct_none_rnipals@scores[,3], col=samplelist$cultivar, pch=19)
+text(log_norm_ct_none_rnipals@scores[,2], log_norm_ct_none_rnipals@scores[,3], labels=samplelist$cultivar, cex=0.7)
+
+plot(log_norm_ct_none_rnipals@scores[,3], log_norm_ct_none_rnipals@scores[,4], col=samplelist$cultivar, pch=19)
+text(log_norm_ct_none_rnipals@scores[,3], log_norm_ct_none_rnipals@scores[,4], labels=samplelist$cultivar, cex=0.7)
+
+
+# pareto scaling, rnipals
+# treatment
+# trial
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist, "trial", 19, "trial effect (pareto scaling, rnipals)")
+func_pca_plot(log_norm_ct_pareto_rnipals, 1, 2, samplelist, "trial", 19, 1, 
+              "bottomright", 0.8, maintext="trial effect (pareto scaling, rnipals)")
+
+# cultivar
+palette(rainbow(34))
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist, "cultivar", 19, "cultivar effect (pareto scaling, rnipals)")
+func_pca_plot(log_norm_ct_pareto_rnipals, 1, 4, samplelist, "cultivar", 19, 1, 
+              "bottomright", 0.8, maintext="cultivar effect (pareto scaling, rnipals)")
+
+plot(log_norm_ct_pareto_rnipals@scores[,1], log_norm_ct_pareto_rnipals@scores[,5], col=samplelist$cultivar, pch=19, xlab="PC1", ylab="PC5")
+text(log_norm_ct_pareto_rnipals@scores[,1], log_norm_ct_pareto_rnipals@scores[,5], labels=samplelist$cultivar, cex=0.7)
+
+
+# no scaling, ppca
+# trial
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_none_ppca, samplelist, "trial", 19, "trial effect (no scaling, ppca)")
+
+func_pca_plot(log_norm_ct_none_ppca, 1, 2, samplelist, "trial", 19, 1, 
+              "bottomright", 0.8, maintext="trial effect (no scaling, ppca)")
+
+# cultivar
+palette(rainbow(34))
+func_5pairs_plot(log_norm_ct_none_ppca, samplelist, "cultivar", 19, "cultivar effect (no scaling, ppca)")
+# separation of some cultivars in PC4 vs. PC5
+func_pca_plot(log_norm_ct_none_ppca, 4, 5, samplelist, "cultivar", 19, 1, 
+              "bottomleft", 0.8, maintext="cultivar effect (no scaling, ppca)")
+
+plot(log_norm_ct_none_ppca@scores[,4], log_norm_ct_none_ppca@scores[,5], col=samplelist$cultivar, pch=19)
+text(log_norm_ct_none_ppca@scores[,4], log_norm_ct_none_ppca@scores[,5], labels=samplelist$cultivar, cex=0.7)
+
+plot(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,2], col="grey", pch=19)
+text(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,2], labels=samplelist$sample_id, cex=0.7)
+dev.off()
+
+palette("default")
+```
+
+
+### PCA all samples for thesis
+```{r PCA all samples for thesis}
+log_norm_ct_none_rnipals@R2
+
+# trials
+pdf("../../../../Doktorarbeit/figures/pca_log_norm_ct_trial.pdf", width=6, height=6)
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+palette(cols_trial_ordered)
+plot(log_norm_ct_none_rnipals@scores[,3], log_norm_ct_none_rnipals@scores[,4], col=samplelist$trial, pch=19, xlim=c(-4.5, 4.5), xlab="PC3 (8.6%)", ylab="PC4 (6.9%)", cex.lab=1.5, cex.axis=1.2, cex=1.5)
+legend("bottomright", fill=1:5, c("JKI field 2012", "MPI field 2011", "MPI field 2012", "MPI-MP GH3", "MPI-MP GH5"), cex=1.2, bty="n")
+dev.off()
+
+# treatment
+pdf("../../../../Doktorarbeit/figures/pca_log_norm_ct_treatment.pdf", width=6, height=6)
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+palette(cols_treatment)
+plot(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,4], col=samplelist$trial, pch=19, xlab="PC1 (23.4%)", ylab="PC4 (6.9%)", cex.lab=1.5, cex.axis=1.2, cex=1.5)
+legend("bottomleft", fill=1:2, c("control", "drought stress"), cex=1.2, bty = "n")
+dev.off()
+
+# cultivars
+pdf("../../../../Doktorarbeit/figures/pca_log_norm_ct_cultivar.pdf", width=6, height=6)
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+palette(rainbow(34))
+plot(log_norm_ct_none_rnipals@scores[,2], log_norm_ct_none_rnipals@scores[,3], col=samplelist$cultivar, pch=19, xlim=c(-4.5, 4.5), xlab="PC2 (14.2%)", ylab="PC3 (8.6%)", cex.lab=1.5, cex.axis=1.2, cex=1.5, ylim=c(-4.5, 4.5))
+legend("topleft", fill=1:34, legend=levels(samplelist$subspecies_id2), cex=0.8, horiz=F, ncol=7, x.intersp=0.2)
+dev.off()
+```
+
+
+
+### only check cultivars
+```{r only check cultivars}
+samplelist_check <- subset(samplelist, samplelist$cultivar %in% c("Alegria", "Desiree", "Milva", "Saturna"))
+samplelist_check$cultivar <- factor(samplelist_check$cultivar, levels=c("Alegria", "Milva", "Desiree", "Saturna"))
+
+log_norm_ct_check <- subset(log_norm_ct, samplelist$cultivar %in% c("Alegria", "Desiree", "Milva", "Saturna"))
+
+log_norm_ct_check_none_rnipals <- func_prep_pca(log_norm_ct_check, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+# no scaling, rnipals
+pdf("../figures/pca_log_norm_ct_check_cultivars.pdf")
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+palette(cols_cultivar2)
+pairs(log_norm_ct_check_none_rnipals@scores[,1:5], col=samplelist_check$treatment, pch=19)
+pairs(log_norm_ct_check_none_rnipals@scores[,1:5], col=samplelist_check$trial, pch=19)
+pairs(log_norm_ct_check_none_rnipals@scores[,1:5], col=samplelist_check$cultivar, pch=19)
+plot(log_norm_ct_check_none_rnipals@scores[,1], log_norm_ct_check_none_rnipals@scores[,2], col=samplelist_check$cultivar, pch=19)
+legend("topright", levels(samplelist_check$cultivar), fill=1:4)
+plot(log_norm_ct_check_none_rnipals@scores[,1], log_norm_ct_check_none_rnipals@scores[,3], col=samplelist_check$cultivar, pch=19, xlab="PC1 (44%)", ylab="PC3 (13%)", cex=2, cex.lab=1.5, cex.axis=1.2)
+legend("bottomright", levels(samplelist_check$cultivar), fill=1:4, cex=1.5)
+dev.off()
+
+# for phd-thesis
+pdf("../../../../Doktorarbeit/figures/pca_log_norm_ct_check_cultivars.pdf", width=6, height=6)
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+palette(cols_cultivar2)
+plot(log_norm_ct_check_none_rnipals@scores[,1], log_norm_ct_check_none_rnipals@scores[,3], col=samplelist_check$cultivar, pch=19, xlab="PC1 (44.7%)", ylab="PC3 (13.0%)", cex=2, cex.lab=1.5, cex.axis=1.2)
+legend("bottomright", levels(samplelist_check$cultivar), fill=1:4, cex=1.2, bty="n")
+dev.off()
+
+head(sort(log_norm_ct_check_none_rnipals@loadings[,1]))
+tail(sort(log_norm_ct_check_none_rnipals@loadings[,1]))
+
+biplot(log_norm_ct_check_none_rnipals)
+```
+
+
+### correlation plot
+```{r corrplot}
+cor_log_norm_ct <- cor(log_norm_ct,use="complete")
+write.table(cor_log_norm_ct, "../output/cor_log_norm_ct.txt", sep="\t")
+
+pdf("../figures/cor_log_norm_ct.pdf", width=10, height=10)
+corrplot(cor_log_norm_ct, order="hclust", tl.col="black", tl.cex=0.6)
+dev.off()
+```
+
+
+### Remove Factors by ANOVA models using R script by Jan Lisec
+```{r source remove factors function}
+source("../../../../repos/libpurzel/RemoveFactors_function.R")
+```
+
+
+### normalize (Remove Factors)
+```{r normalize (Remove Factors)}
+levels(samplelist$trial)
+levels(samplelist$treatment)
+levels(samplelist$cultivar)
+
+# treatment included
+log_norm_ct_2 <- apply(log_norm_ct, 2, RemoveFactors, sam=samplelist, 
+                              facs=c("cultivar", "trial"), 
+                              keep=c("cultivar"))
+
+# treatment NOT included!
+log_norm_ct_3 <- apply(log_norm_ct, 2, RemoveFactors, sam=samplelist, 
+                              facs=c("cultivar", "trial", "treatment"), 
+                              keep=c("cultivar", "treatment"))
+```
+
+
+### PCA after Remove Factors
+```{r PCA after Remove Factors}
+
+log_norm_ct_pareto_rnipals_2 <- func_prep_pca(log_norm_ct_2, scale_method = "pareto", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_pareto_rnipals_3 <- func_prep_pca(log_norm_ct_3, scale_method = "pareto", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+pdf("../figures/pca_log_norm_ct_2.pdf")
+
+# pareto scaling, rnipals
+palette("default")
+pairs(log_norm_ct_pareto_rnipals_2@scores[,1:5], col=samplelist$treatment, pch=19) # --> separation in PC1 vs.PC3
+plot(log_norm_ct_pareto_rnipals_2@scores[,1], log_norm_ct_pareto_rnipals_2@scores[,3], col=samplelist$treatment, pch=19, xlab="PC1 (25%)", ylab="PC3 (8%)")
+legend("bottomright", levels(samplelist$treatment), fill=1:2)
+
+pairs(log_norm_ct_pareto_rnipals_2@scores[,1:5], col=samplelist$trial, pch=19)
+plot(log_norm_ct_pareto_rnipals_2@scores[,1], log_norm_ct_pareto_rnipals_2@scores[,2], col=samplelist$trial, pch=19, xlab="PC1 (25%)", ylab="PC2 (8%)")
+legend("topleft", levels(samplelist$trial), fill=1:5)
+palette(rainbow(34))
+pairs(log_norm_ct_pareto_rnipals_2@scores[,1:5], col=samplelist$cultivar, pch=19)
+plot(log_norm_ct_pareto_rnipals_2@scores[,3], log_norm_ct_pareto_rnipals_2@scores[,4], col=samplelist$cultivar, pch=19, xlab="PC1 (25%)", ylab="PC4 (5%)")
+text(log_norm_ct_pareto_rnipals_2@scores[,3], log_norm_ct_pareto_rnipals_2@scores[,4], labels=samplelist$cultivar, cex=1)
+
+dev.off()
+palette("default")
+```
+
+
+
+## only field trials (same in qpcr and rnaseq)
+### t01, t05, t06
+```{r field}
+# without housekeeping genes
+dim(fpkm_genes)
+fpkm_genes_marker_field <- fpkm_genes[colnames(rawdata_cleaned_ct_woHK), c(1:8,33:48)]
+
+fpkm_genes_marker_field_mean <- apply(fpkm_genes_marker_field, 1, mean)
+fpkm_genes_marker_field_mean <- fpkm_genes_marker_field_mean[order(names(fpkm_genes_marker_field_mean))]
+assoc_pgsc_marker_field <- cbind(assoc_pgsc_marker, fpkm_mean = fpkm_genes_marker_field_mean)
+
+# # all cultivars
+# rawdata_cleaned_ct_woHK_field_mean <- apply(rawdata_cleaned_ct_woHK, 2, mean, na.rm=T)
+# rawdata_cleaned_ct_hk_mean <- apply(rawdata_cleaned_ct, 2, mean, na.rm=T)
+# log2_norm_ct_mean <- apply(log2_norm_ct, 2, mean, na.rm=T)
+
+# only check cultivars
+log2_norm_ct_check_field <- subset(log2_norm_ct, 
+                                   samplelist$cultivar %in% c("Alegria", "Desiree", "Milva", "Saturna") &
+                                     samplelist$trial %in% c("mpi_feld_2011", "mpi_feld_2012", "jki_feld_2012") )
+log2_norm_ct_check_field_mean <- apply(log2_norm_ct_check_field, 2, mean, na.rm=T)
+
+assoc_pgsc_marker_field = cbind(assoc_pgsc_marker_field[match(names(rawdata_cleaned_ct_woHK_mean), 
+                                                  assoc_pgsc_marker_field$pgsc_dmt),], 
+                          log2_norm_ct_check_field_mean)
+
+plot(assoc_pgsc_marker_field$log2_norm_ct_check_field_mean, log2(assoc_pgsc_marker_field$fpkm_mean))
+```
+
+## create heatmap with 6 column types
+```{r create heatmap with 6 column types}
+dim(log_norm_ct)
+
+samplelist_field <- droplevels( samplelist[which(samplelist$cultivation=="field"), ])
+samplelist_field_treatment_trial <- interaction(samplelist_field$treatment, samplelist_field$trial)
+
+mat_log_norm_ct <- as.matrix(t(log_norm_ct[which(samplelist$cultivation=="field"), ]))
+
+# colnames(mat_log_norm_ct) 
+
+distance_log_norm_ct = dist(mat_log_norm_ct, method = "euclidian")
+cluster_log_norm_ct = hclust(distance_log_norm_ct, method = "average")
+
+distance_log_norm_ct_samples = dist(t(mat_log_norm_ct), method = "euclidian")
+cluster_log_norm_ct_samples = hclust(distance_log_norm_ct_samples, method = "average")
+
+#mycluster <- cutree(cluster, h=max(cluster$height)/1.5)
+mycluster_tolerance <- cutree(cluster_log_norm_ct, k=5)
+mycluster_tolerance[cluster_log_norm_ct$order]
+
+mycolor <- brewer.pal(5, "Set2")
+mycolor <- mycolor[as.vector(mycluster_tolerance)]
+
+mycolor_samples <- brewer.pal(6, "Paired")
+mycolor_samples <- mycolor_samples[as.numeric(samplelist_field_treatment_trial)]
+
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+
+col_breaks = c(seq(-2,-0.5,length=100), # for blue
+               seq(-0.5,0.5,length=100), # for white
+               seq(0.5,2,length=100)) # for red
+```
+
+## plot heatmap with 6 column types
+```{r plot heatmap with 6 column types}
+pdf("../figures/heatmap_qpcr_field.pdf", width=40, height=12)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_log_norm_ct,
+  #cellnote = signif_tolerance,  # same data set for cell labels
+  #notecex = 1.5, # numeric scaling factor for cellnote items
+  #colsep = 1:ncol(mat_log_norm_ct), 
+  #rowsep = 1:nrow(mat_log_norm_ct),
+  #sepwidth = c(0.01,0.01),
+  #sepcolor = "black",
+  main = "", # heat map title
+  #notecol = "black",      # change font color of cell labels to black
+  density.info = "none",  # turns off density plot inside color legend
+  trace = "none",         # turns off trace lines inside the heat map
+  margins = c(8,21),     # widens margins around plot
+  keysize = 1.8,
+  cexRow = 1.5,
+  cexCol = 1.5,
+  lhei = c(0.6, 4),
+  col = my_palette,       # use on color palette defined earlier 
+  breaks = col_breaks,    # enable color transition at specified limits
+  RowSideColors = mycolor,
+  ColSideColors = mycolor_samples,
+  Rowv = as.dendrogram(cluster_log_norm_ct),
+  Colv = as.dendrogram(cluster_log_norm_ct_samples),
+  #labCol = c("GH sensitive", "GH tolerant", "field sensitive", "field tolerant"),
+  srtCol = 270,
+  adjCol = c(0,1),
+  scale = "row",
+  dendrogram = "both")     # only draw a row dendrogram
+
+dev.off()
+```
+
+
+## create heatmap with 34 column types according to cultivars
+```{r create heatmap with 34 column types}
+
+mycolor_samples2 <- rainbow(34)
+mycolor_samples2 <- mycolor_samples2[as.numeric(samplelist_field$cultivar)]
+
+mat_log_norm_ct2 <- mat_log_norm_ct
+colnames(mat_log_norm_ct2) <- samplelist_field$cultivar
+```
+
+## plot heatmap with 34 column types according to cultivars
+```{r plot heatmap with 34 column types}
+pdf("../figures/heatmap_qpcr_field2.pdf", width=40, height=12)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_log_norm_ct,
+  main = "", # heat map title
+  density.info = "none",  # turns off density plot inside color legend
+  trace = "none",         # turns off trace lines inside the heat map
+  margins = c(8,21),     # widens margins around plot
+  keysize = 1.8,
+  cexRow = 1.5,
+  cexCol = 1.5,
+  lhei = c(0.6, 4),
+  col = my_palette,       # use on color palette defined earlier 
+  breaks = col_breaks,    # enable color transition at specified limits
+  RowSideColors = mycolor,
+  ColSideColors = mycolor_samples2,
+  Rowv = as.dendrogram(cluster_log_norm_ct),
+  Colv = as.dendrogram(cluster_log_norm_ct_samples),
+  labCol = samplelist_field$cultivar,
+  srtCol = 270,
+  adjCol = c(0,1),
+  scale = "row",
+  dendrogram = "both")     # only draw a row dendrogram
+
+dev.off()
+```
+
+
+# ANOVA with 2 factors
+```{r}
+source("../../../../repos/libpurzel/func_anova.R")
+
+res_anova_adj <- func_anova_2fac(normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "cultivar",
+                                 threshold = 0.01,
+                                 analyte_names = colnames(log_norm_ct))
+
+head(res_anova_adj)
+
+res_anova_adj_ia <- func_anova_2fac_ia(normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "cultivar",
+                                 threshold = 0.01,
+                                 analyte_names = colnames(log_norm_ct))
+```
+
+
+
+## Boxplots per gene
+```{r boxplots per gene}
+source("../../../../repos/libpurzel/func_boxplot.R")
+
+pdf("../figures/boxplots_per_gene_per_cultivar.pdf", 8, 6)
+func_boxplot_1fac(normalized_values = log_norm_ct, 
+                  trial_factors = samplelist, 
+                  factor = "cultivar", 
+                  res_anova_adj = res_anova_adj, 
+                  cols = cols_cultivar_34, 
+                  analyte_names = colnames(log_norm_ct))
+dev.off()
+
+pdf("../figures/boxplots_per_gene_per_cultivar_treatment.pdf", 8, 6)
+par(mar=c(7, 4.1, 7, 2.1))
+func_boxplot_2fac(normalized_values = log_norm_ct, 
+                  trial_factors = samplelist, 
+                  factor1 = "treatment",
+                  factor2 = "cultivar",
+                  res_anova_adj = res_anova_adj_ia, 
+                  cols = cols_treatment, 
+                  analyte_names = colnames(log_norm_ct))
+dev.off()
+```
+
+
+```{r save workspace}
+save.image("qpcr_data_breeder.RData")
+```
+
+
