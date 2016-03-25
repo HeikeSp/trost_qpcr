@@ -1,0 +1,1357 @@
+Prediction Model using qPCR data (field) from TROST and VALDIS
+========================================================
+
+## Just use common set of 42 genes for TROST and VALDIS dataset
+* 356 TROST samples (5 trials, cultivars)
+* 803 VALDIS samples (2 trials, crossings)
+
+```{r setup}
+setwd("TROST/Sequencing/qpcr_data/scripts/")
+load("qpcr_model_field_valdis.RData")
+```
+
+### Load packages
+```{r load packages}
+library(plyr)
+library(rpart)
+library(randomForest)
+library(partykit)
+library(party)
+library(caret) 
+library(pls)
+library(BioMark)
+library(varSelRF)
+library(glmnet)
+library(psych)
+library(corrgram)
+library(corrplot)
+
+source("../../../../repos/libpurzel/colors.R")
+```
+
+
+### Load data 
+```{r load data}
+tolerance <- read.table("../../../Prediction_Model/output/tolerance_phenotyper_metadata_2sub.txt", sep="\t", header=TRUE)
+levels(tolerance$tol_cat2_fve) <- c("low", "high")
+levels(tolerance$tol_cat3_fve) <- c("low", "mid", "high")
+
+# TROST data
+samplelist_trost <- read.table("../output/samplelist.txt", header=TRUE, sep="\t")
+log_norm_ct_subset_trost <- read.table("../output/log_norm_ct_subset_trost.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_subset_trost)
+# 356 42
+
+# percentage of NAs
+sum(is.na(log_norm_ct_subset_trost))/(356*42)*100
+# 0.688%
+
+
+# VALDIS data
+samplelist_valdis <- read.table("../../../../TROST2/qpcr/output/samplelist.txt", header=TRUE, sep="\t")
+log_norm_ct_cleaned_valdis <- read.table("../../../../TROST2/qpcr/output/log_norm_ct_cleaned.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_cleaned_valdis)
+# 803 42
+
+
+# TROST + VALDIS data
+samplelist_all <- read.table("../output/samplelist_all.txt", header=TRUE, sep="\t")
+log_norm_ct_all <- read.table("../output/log_norm_ct_all.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_all)
+# 1159 42
+```
+
+
+### Define training data
+```{r define training data}
+# join metadata
+head(tolerance)
+head(samplelist_trost)
+levels(samplelist_trost$treatment) <- c("control", "drought stress")
+
+# join TROST samplelist with tolerance information
+samplelist_trost_joined <- join(samplelist_trost, tolerance, by="subspecies_id")
+samplelist_trost_field <- subset(samplelist_trost_joined, samplelist_trost_joined$cultivation=="field")
+
+# only TROST field data
+log_norm_ct_trost_field <- subset(log_norm_ct_subset_trost, samplelist_trost$cultivation=="field")
+
+# train/test data
+train_data <- subset(log_norm_ct_trost_field, samplelist_trost_field$model_set=="train")
+test_data <- subset(log_norm_ct_trost_field, samplelist_trost_field$model_set=="test")
+
+# train/test info
+train_info <- subset(samplelist_trost_field, samplelist_trost_field$model_set=="train")
+test_info <- subset(samplelist_trost_field, samplelist_trost_field$model_set=="test")
+```
+
+
+### Define control data (and meta data)
+```{r define control data}
+# data
+train_data_control <- subset(train_data, train_info$treatment=="control")
+test_data_control <- subset(test_data, test_info$treatment=="control")
+
+# meta data
+train_info_control <- subset(train_info, train_info$treatment=="control")
+test_info_control <- subset(test_info, test_info$treatment=="control")
+```
+
+
+### Define all TROST data (without 3 cultivars --> model_set=="NA") and subset of all TROST control samples
+```{r define all data (control)}
+# all TROST samples (without NA --> 3 cultivars)
+all_data <- subset(log_norm_ct_trost_field, !samplelist_trost_field$model_set=="NA")
+all_info <- subset (samplelist_trost_field, !samplelist_trost_field$model_set=="NA")
+
+
+# all TROST control samples (without NA --> 3 cultivars)
+all_data_control <- subset(log_norm_ct_trost_field, 
+                           samplelist_trost_field$treatment=="control" & !samplelist_trost_field$model_set=="NA")
+
+all_info_control <- subset (samplelist_trost_field, 
+                            samplelist_trost_field$treatment=="control" & !samplelist_trost_field$model_set=="NA")
+```
+
+
+### data without NAs from PCA (rnipals, no scaling)
+```{r data without NAs}
+log_norm_ct_woNA_all <- read.table("../output/log_norm_ct_prep_none_rnipals_completeObs_valdis.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_woNA_all)
+# 1159 42
+log_norm_ct_trost_field_woNA <- subset(log_norm_ct_woNA_all, 
+                                       samplelist_all$cultivation=="field" & samplelist_all$trost_valdis == "trost")
+dim(log_norm_ct_trost_field_woNA)
+# 220 42
+
+##### train/test #####
+train_data_woNA <- subset(log_norm_ct_trost_field_woNA, samplelist_trost_field$model_set=="train")
+test_data_woNA <- subset(log_norm_ct_trost_field_woNA, samplelist_trost_field$model_set=="test")
+dim(train_data_woNA)
+dim(test_data_woNA)
+
+##### control ####
+train_data_control_woNA <- subset(train_data_woNA, train_info$treatment=="control")
+test_data_control_woNA <- subset(test_data_woNA, test_info$treatment=="control")
+
+##### all ####
+all_data_woNA <- subset(log_norm_ct_trost_field_woNA, !samplelist_trost_field$model_set=="NA")
+dim(all_data_woNA)
+# 202 42
+
+#### all control samples #####
+all_data_control_woNA <- subset(log_norm_ct_trost_field_woNA, 
+                                samplelist_trost_field$treatment=="control" & !samplelist_trost_field$model_set=="NA")
+
+
+#################################################################
+
+#### VALDIS data #####
+log_norm_ct_valdis_woNA <- subset(log_norm_ct_woNA_all, samplelist_all$trost_valdis == "valdis")
+dim(log_norm_ct_valdis_woNA)
+# 803 42
+```
+
+
+### regression tree: rpart package, train data
+```{r rpart reg train}
+# class(train_data)
+# input_train <- cbind(train_data, "tol"=train_info$mdrym_fve)
+# class(input_train)
+# 
+# tree_train <- rpart(tol~., data=input_train)
+# printcp(tree_train)
+# plot(tree_train)
+# text(tree_train)
+# 
+# tree_train$cptable[which.min(tree_train$cptable[,"xerror"]),"CP"]
+# tree_train_pruned <- prune(tree_train, cp=0.01)
+# 
+# plot(tree_train_pruned)
+# text(tree_train_pruned)
+# 
+# # as party 
+# plot(as.party(tree_train_pruned))
+# 
+# pdf("../figures/field_tree_train_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_train, cp=0.16))) # 1 node
+# plot(as.party(prune(tree_train, cp=0.13))) # 2 nodes
+# plot(as.party(prune(tree_train, cp=0.12))) # 3 nodes
+# plot(as.party(prune(tree_train, cp=0.10))) # 4 nodes
+# plot(as.party(prune(tree_train, cp=0.06))) # 5 nodes
+# plot(as.party(prune(tree_train, cp=0.05))) # 6 nodes
+# plot(as.party(prune(tree_train, cp=0.04))) # 7 nodes
+# plot(as.party(prune(tree_train, cp=0.0161))) # 8 nodes
+# plot(as.party(prune(tree_train, cp=0.0160))) # 9 nodes
+# plot(as.party(prune(tree_train, cp=0.012))) # 10 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# plot(test_info$mdrym_fve, predict(tree_train, as.data.frame(test_data), type="vector"))
+# sqrt(mean((test_info$mdrym_fve - predict(tree_train, as.data.frame(test_data), type="vector"))^2))
+```
+
+
+### regression tree: rpart package, only control field train data
+```{r rpart reg train control}
+# class(train_data_control)
+# input_train_control <- as.data.frame( cbind(train_data_control, "tol"=train_info_control$mdrym_fve))
+# class(input_train_control)
+# 
+# tree_train_control <- rpart(tol~., data=input_train_control)
+# printcp(tree_train_control)
+# plot(tree_train_control)
+# text(tree_train_control)
+# 
+# tree_train_control$cptable[which.min(tree_train_control$cptable[,"xerror"]),"CP"]
+# tree_train_control_pruned <- prune(tree_train_control, cp=0.03831349)
+# 
+# plot(tree_train_control_pruned)
+# text(tree_train_control_pruned)
+# 
+# # as party 
+# plot(as.party(tree_train_control_pruned))
+# 
+# pdf("../figures/field_tree_train_control_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_train_control, cp=0.25))) # 1 node
+# plot(as.party(prune(tree_train_control, cp=0.15))) # 2 nodes
+# plot(as.party(prune(tree_train_control, cp=0.10))) # 3 nodes
+# plot(as.party(prune(tree_train_control, cp=0.05))) # 4 nodes
+# plot(as.party(prune(tree_train_control, cp=0.02))) # 5 nodes
+# plot(as.party(prune(tree_train_control, cp=0.01))) # 6 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# plot(test_info_control$mdrym_fve, predict(tree_train_control, as.data.frame(test_data_control), type="vector"))
+# sqrt(mean((test_info_control$mdrym_fve - predict(tree_train_control, as.data.frame(test_data_control), type="vector"))^2))
+```
+
+
+### regression tree: rpart package, all data
+```{r rpart reg all}
+# input_all <- cbind(all_data, "tol"=all_info$mdrym_fve)
+# sum(is.na(all_data))
+# # 76
+# dim(all_data)
+# 
+# tree_all <- rpart(tol~., data=input_all)
+# printcp(tree_all)
+# plot(tree_all)
+# text(tree_all)
+# 
+# tree_all$cptable[which.min(tree_all$cptable[,"xerror"]),"CP"]
+# tree_all_pruned <- prune(tree_all, cp=0.01)
+# 
+# plot(tree_all_pruned)
+# text(tree_all_pruned)
+# 
+# # as party 
+# plot(as.party(tree_all_pruned))
+# 
+# pdf("../figures/field_tree_all_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_all, cp=0.16))) # 1 node
+# plot(as.party(prune(tree_all, cp=0.13))) # 2 nodes
+# plot(as.party(prune(tree_all, cp=0.10))) # 3 nodes
+# plot(as.party(prune(tree_all, cp=0.09))) # 4 nodes
+# plot(as.party(prune(tree_all, cp=0.05))) # 6 nodes
+# plot(as.party(prune(tree_all, cp=0.02))) # 7 nodes
+# plot(as.party(prune(tree_all, cp=0.016))) # 8 nodes
+# plot(as.party(prune(tree_all, cp=0.0122))) # 9 nodes
+# plot(as.party(prune(tree_all, cp=0.01))) # 10 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# plot(test_info$mdrym_fve, predict(tree_all, as.data.frame(test_data), type="vector"))
+# sqrt(mean((test_info$mdrym_fve - predict(tree_all, as.data.frame(test_data), type="vector"))^2))
+# 
+# # for all data
+# plot(all_info$mdrym_fve, predict(tree_all, as.data.frame(all_data), type="vector"))
+# sqrt(mean((all_info$mdrym_fve - predict(tree_all, as.data.frame(all_data), type="vector"))^2))
+```
+
+
+### regression tree: rpart package, all data control
+```{r rpart reg all control}
+# input_all_control <- cbind(all_data_control, "tol"=all_info_control$mdrym_fve)
+# 
+# tree_all_control <- rpart(tol~., data=input_all_control)
+# printcp(tree_all_control)
+# plot(tree_all_control)
+# text(tree_all_control)
+# 
+# tree_all_control$cptable[which.min(tree_all_control$cptable[,"xerror"]),"CP"]
+# tree_all_control_pruned <- prune(tree_all_control, cp=0.01)
+# 
+# plot(tree_all_control_pruned)
+# text(tree_all_control_pruned)
+# 
+# # as party 
+# plot(as.party(tree_all_control_pruned))
+# 
+# pdf("../figures/field_tree_all_control_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_all_control, cp=0.21))) # 1 node
+# plot(as.party(prune(tree_all_control, cp=0.15))) # 2 nodes
+# plot(as.party(prune(tree_all_control, cp=0.10))) # 3 nodes
+# plot(as.party(prune(tree_all_control, cp=0.06))) # 4 nodes
+# plot(as.party(prune(tree_all_control, cp=0.05))) # 5 nodes
+# plot(as.party(prune(tree_all_control, cp=0.015))) # 6 nodes
+# plot(as.party(prune(tree_all_control, cp=0.01))) # 7 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# plot(test_info_control$mdrym_fve, predict(tree_all_control, as.data.frame(test_data_control), type="vector"))
+# sqrt(mean((test_info_control$mdrym_fve - predict(tree_all_control, as.data.frame(test_data_control), type="vector"))^2))
+# 
+# # for all data
+# plot(all_info_control$mdrym_fve, predict(tree_all_control, as.data.frame(all_data_control), type="vector"))
+# sqrt(mean((all_info_control$mdrym_fve - predict(tree_all_control, as.data.frame(all_data_control), type="vector"))^2))
+```
+
+
+### classification tree: rpart package, train data, 2 tolerance classes
+```{r rpart cat2 train}
+# input_cat2_train <- as.data.frame( cbind(train_data, "tol"=train_info$tol_cat2_fve))
+# input_cat2_train$tol <- train_info$tol_cat2_fve
+# 
+# tree_cat2_train <- rpart(tol~., data=input_cat2_train)
+# printcp(tree_cat2_train)
+# plot(tree_cat2_train)
+# text(tree_cat2_train)
+# 
+# tree_cat2_train$cptable[which.min(tree_cat2_train$cptable[,"xerror"]),"CP"]
+# tree_cat2_train_pruned <- prune(tree_cat2_train, cp=0.08064516)
+# 
+# plot(tree_cat2_train_pruned)
+# text(tree_cat2_train_pruned)
+# 
+# # as party 
+# plot(as.party(tree_cat2_train_pruned))
+# 
+# pdf("../figures/field_tree_cat2_train_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_cat2_train, cp=0.2))) # 1 node
+# plot(as.party(prune(tree_cat2_train, cp=0.09))) # 2 nodes
+# plot(as.party(prune(tree_cat2_train, cp=0.05))) # 3 nodes
+# plot(as.party(prune(tree_cat2_train, cp=0.02))) # 4 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# table(train_info$tol_cat2_fve, predict(tree_cat2_train, as.data.frame(train_data), type="class"))
+# table(test_info$tol_cat2_fve, predict(tree_cat2_train, as.data.frame(test_data), type="class"))
+```
+
+
+### classification tree: rpart package, train data, 3 tolerance classes
+```{r rpart cat3 train}
+# input_cat3_train <- as.data.frame( cbind(train_data, "tol"=train_info$tol_cat3_fve))
+# input_cat3_train$tol <- train_info$tol_cat3_fve
+# levels(input_cat3_train$tol)
+# 
+# tree_cat3_train <- rpart(tol~., data=input_cat3_train)
+# printcp(tree_cat3_train)
+# plot(tree_cat3_train)
+# text(tree_cat3_train)
+# 
+# tree_cat3_train$cptable[which.min(tree_cat3_train$cptable[,"xerror"]),"CP"]
+# tree_cat3_train_pruned <- prune(tree_cat3_train, cp=0.09782609)
+# 
+# plot(tree_cat3_train_pruned)
+# text(tree_cat3_train_pruned)
+# 
+# # as party 
+# plot(as.party(tree_cat3_train_pruned))
+# 
+# pdf("../figures/field_tree_cat3_train_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_cat3_train, cp=0.20))) # 1 node
+# plot(as.party(prune(tree_cat3_train, cp=0.10))) # 2 nodes
+# plot(as.party(prune(tree_cat3_train, cp=0.08))) # 3 nodes
+# plot(as.party(prune(tree_cat3_train, cp=0.05))) # 7 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# table(train_info$tol_cat3_fve, predict(tree_cat3_train, as.data.frame(train_data), type="class"))
+# table(test_info$tol_cat3_fve, predict(tree_cat3_train, as.data.frame(test_data), type="class"))
+```
+
+
+### classification tree: rpart package, all data, 3 tolerance classes
+```{r rpart cat3 all}
+# input_cat3_all <- as.data.frame( cbind(all_data, "tol"=all_info$tol_cat3_fve))
+# input_cat3_all$tol <- all_info$tol_cat3_fve
+# levels(input_cat3_all$tol)
+# 
+# tree_cat3_all <- rpart(tol~., data=input_cat3_all)
+# printcp(tree_cat3_all)
+# plot(tree_cat3_all)
+# text(tree_cat3_all)
+# 
+# tree_cat3_all$cptable[which.min(tree_cat3_all$cptable[,"xerror"]),"CP"]
+# # tree_cat3_all_pruned <- prune(tree_cat3_all, cp=0.01)
+# tree_cat3_all_pruned <- prune(tree_cat3_all, cp=0.05)
+# 
+# plot(tree_cat3_all_pruned)
+# text(tree_cat3_all_pruned)
+# 
+# # as party 
+# plot(as.party(tree_cat3_all_pruned))
+# 
+# pdf("../figures/field_tree_cat3_all_pruned.pdf", width=13, height=8)
+# plot(as.party(prune(tree_cat3_all, cp=0.20))) # 1 node
+# plot(as.party(prune(tree_cat3_all, cp=0.13))) # 2 nodes
+# plot(as.party(prune(tree_cat3_all, cp=0.08))) # 3 nodes
+# plot(as.party(prune(tree_cat3_all, cp=0.05))) # 7 nodes
+# dev.off()
+# 
+# ###############
+# # predict
+# table(all_info$tol_cat3_fve, predict(tree_cat3_all, as.data.frame(all_data), type="class"))
+# table(test_info$tol_cat3_fve, predict(tree_cat3_all, as.data.frame(test_data), type="class"))
+```
+
+
+### random forest regression: train data
+```{r rf reg train}
+input_train_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$mdrym_fve))
+class(input_train_woNA)
+
+set.seed(1)
+rf_train <- randomForest(tol~. , data=input_train_woNA, ntree=1000)
+print(rf_train)
+
+#importance(rf_train)
+varImpPlot(rf_train)
+
+plot(train_info$mdrym_fve, rf_train$predicted)
+abline(0,1)
+
+plot(test_info$mdrym_fve, predict(rf_train, test_data_woNA))
+sqrt(mean((test_info$mdrym_fve - predict(rf_train, as.data.frame(test_data_woNA)))^2))
+```
+
+
+#### Cross-Validation
+```{r rf reg train CV}
+set.seed(3)
+rf_train_cv <- rfcv(train_data_woNA, train_info$mdrym_fve, step=0.8)
+rf_train_cv$n.var
+with(rf_train_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
+```
+
+
+### random forest regression: train control data
+```{r rf reg train control}
+input_train_control_woNA <- as.data.frame( cbind(train_data_control_woNA, "tol"=train_info_control$mdrym_fve))
+class(input_train_control_woNA)
+
+set.seed(1)
+rf_train_control <- randomForest(tol~. , data=input_train_control_woNA, ntree=1000)
+print(rf_train_control)
+
+#importance(rf_train_control)
+varImpPlot(rf_train_control)
+
+plot(train_info_control$mdrym_fve, rf_train_control$predicted)
+abline(0,1)
+
+plot(test_info_control$mdrym_fve, predict(rf_train_control, test_data_control_woNA))
+sqrt(mean((test_info_control$mdrym_fve - predict(rf_train_control, as.data.frame(test_data_control_woNA)))^2))
+```
+
+
+### random forest regression: all data
+```{r rf reg all}
+input_all_woNA <- as.data.frame( cbind(all_data_woNA, "tol"=all_info$mdrym_fve))
+
+set.seed(1)
+rf_all <- randomForest(tol~. , data=input_all_woNA, ntree=1000)
+print(rf_all)
+
+#importance(rf_all)
+varImpPlot(rf_all)
+
+plot(all_info$mdrym_fve, rf_all$predicted)
+abline(0,1)
+
+plot(test_info$mdrym_fve, predict(rf_all, test_data_woNA))
+abline(0,1)
+sqrt(mean((test_info$mdrym_fve - predict(rf_all, as.data.frame(test_data_woNA)))^2))
+```
+
+
+## predict DRYM (numeric tolerance) from VALDIS data
+```{r predict DRYM (numeric tolerance) from VALDIS data}
+log_norm_ct_valdis_woNA
+
+rf_all_predicted_drym_valdis <- predict(rf_all, log_norm_ct_valdis_woNA)
+summary(rf_all_predicted_drym_valdis)
+
+# change order of genotype levels
+samplelist_valdis$crossing <- factor(samplelist_valdis$crossing,
+                                     levels = c("Desiree", "Euroresa", "ExA", "Albatros", "AxR", "Ramses"))
+```
+
+
+### sort and aggregate drym values
+```{r sort and aggregate drym values}
+# join predicted DRYM values with line names
+rf_all_predicted_drym_valdis_line <- data.frame(drym = rf_all_predicted_drym_valdis, 
+                                                line = samplelist_valdis$name)
+head(rf_all_predicted_drym_valdis_line)
+
+# aggregate median and sort
+rf_all_predicted_drym_valdis_median <- aggregate(rf_all_predicted_drym_valdis_line$drym, 
+                                                 by=list(rf_all_predicted_drym_valdis_line$line),
+                                                 median)
+colnames(rf_all_predicted_drym_valdis_median) <- c("line", "drym")
+rf_all_predicted_drym_valdis_median_sorted <- rf_all_predicted_drym_valdis_median[order(rf_all_predicted_drym_valdis_median$drym),]
+
+
+# save median of predicted drym
+write.table(rf_all_predicted_drym_valdis_median, 
+            "../output/valdis/rf_all_predicted_drym_valdis_median.txt", 
+            sep="\t", row.names=F)
+
+
+# sort predicted DRYM values for plot
+rf_all_predicted_drym_valdis_sorted <- with(rf_all_predicted_drym_valdis_line, reorder(line, drym, median, na.rm=T))
+head(rf_all_predicted_drym_valdis_sorted)
+```
+
+
+### top35
+```{r top35}
+sens35 <- head(rf_all_predicted_drym_valdis_median_sorted$line, n=35)
+tol35 <- tail(rf_all_predicted_drym_valdis_median_sorted$line, n=35)
+
+sens35_idx <- which(rf_all_predicted_drym_valdis_line$line %in% sens35)
+tol35_idx <- which(rf_all_predicted_drym_valdis_line$line %in% tol35)
+
+rf_all_predicted_drym_valdis_line_sens35 <- rf_all_predicted_drym_valdis_line[sens35_idx,]
+rf_all_predicted_drym_valdis_line_tol35 <- rf_all_predicted_drym_valdis_line[tol35_idx,]
+
+# sort
+rf_all_predicted_drym_valdis_line_sens35_sorted <- with(rf_all_predicted_drym_valdis_line_sens35, reorder(line, drym, median, na.rm=T))
+rf_all_predicted_drym_valdis_line_sens35_sorted <- droplevels(rf_all_predicted_drym_valdis_line_sens35_sorted)
+rf_all_predicted_drym_valdis_line_tol35_sorted <- with(rf_all_predicted_drym_valdis_line_tol35, reorder(line, drym, median, na.rm=T))
+rf_all_predicted_drym_valdis_line_tol35_sorted <- droplevels(rf_all_predicted_drym_valdis_line_tol35_sorted)
+```
+
+
+### define colors
+```{r define colors}
+color <- rep("gold", 199)
+color [which( grepl("^AxR", levels(rf_all_predicted_drym_valdis_sorted) ))] <- "greenyellow"
+color [which( levels (rf_all_predicted_drym_valdis_sorted) %in% c("Ramses", "Euroresa", "Albatros") )] <- "red"
+color [which( levels (rf_all_predicted_drym_valdis_sorted) == "Desiree" )] <- "deepskyblue"
+color_fac <- factor(color)
+
+color_sens35 <- rep("gold", 35)
+color_sens35 [which( grepl("^AxR", levels(rf_all_predicted_drym_valdis_line_sens35_sorted) ))] <- "greenyellow"
+color_sens35 [which( levels (rf_all_predicted_drym_valdis_line_sens35_sorted) %in% c("Ramses", "Euroresa", "Albatros") )] <- "red"
+color_sens35 [which( levels (rf_all_predicted_drym_valdis_line_sens35_sorted) == "Desiree" )] <- "deepskyblue"
+
+color_tol35 <- rep("gold", 35)
+color_tol35 [which( grepl("^AxR", levels(rf_all_predicted_drym_valdis_line_tol35_sorted) ))] <- "greenyellow"
+color_tol35 [which( levels (rf_all_predicted_drym_valdis_line_tol35_sorted) %in% c("Ramses", "Euroresa", "Albatros") )] <- "red"
+color_tol35 [which( levels (rf_all_predicted_drym_valdis_line_tol35_sorted) == "Desiree" )] <- "deepskyblue"
+```
+
+
+
+### boxplot predicted drym
+```{r boxplot predicted drym}
+
+pdf("../figures/valdis/boxplot_rf_all_predicted_drym.pdf", width=8.5, height=5)
+boxplot(rf_all_predicted_drym_valdis ~ samplelist_valdis$crossing, ylab="DRYM", cex.lab=1.5, cex.axis=1.1)
+dev.off()
+
+
+pdf("../figures/valdis/boxplot_rf_all_predicted_drym_line.pdf", width=12, height=6)
+boxplot(rf_all_predicted_drym_valdis ~ samplelist_valdis$name, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=0.7, las=2)
+boxplot(drym ~ rf_all_predicted_drym_valdis_sorted, data = rf_all_predicted_drym_valdis_line, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=0.7, las=2, col=color)
+legend("bottomright", fill=levels(color_fac), legend=c("Desiree", "ExA", "AxR", "Eltern"))
+dev.off()
+
+# SENS 35
+pdf("../figures/valdis/boxplot_rf_all_predicted_drym_line_sens35.pdf", width=10, height=5)
+par(mar=c(7,5,1,1))
+boxplot(drym ~ rf_all_predicted_drym_valdis_line_sens35_sorted, data = rf_all_predicted_drym_valdis_line_sens35, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=1.2, las=2, col=color_sens35)
+legend("bottomright", fill=levels(color_fac), legend=c("Desiree", "ExA", "AxR", "Eltern"), cex=0.9)
+dev.off()
+
+# TOL 35
+pdf("../figures/valdis/boxplot_rf_all_predicted_drym_line_tol35.pdf", width=10, height=5)
+par(mar=c(7,5,1,1))
+boxplot(drym ~ rf_all_predicted_drym_valdis_line_tol35_sorted, data = rf_all_predicted_drym_valdis_line_tol35, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=1.2, las=2, col=color_tol35)
+legend("bottomright", fill=levels(color_fac), legend=c("Desiree", "ExA", "AxR", "Eltern"), cex=0.9)
+dev.off()
+```
+
+
+
+
+#### Cross-Validation
+```{r rf reg all CV}
+set.seed(3)
+rf_all_cv <- rfcv(all_data_woNA, all_info$mdrym_fve, step=0.8)
+rf_all_cv$n.var
+with(rf_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
+```
+
+
+### random forest regression: ALL control data
+```{r rf reg all control}
+input_all_control_woNA <- as.data.frame( cbind(all_data_control_woNA, "tol"=all_info_control$mdrym_fve))
+
+set.seed(1)
+rf_all_control <- randomForest(tol~. , data=input_all_control_woNA, ntree=1000)
+print(rf_all_control)
+
+#importance(rf_all_control)
+varImpPlot(rf_all_control)
+
+plot(all_info_control$mdrym_fve, rf_all_control$predicted)
+abline(0,1)
+
+plot(test_info_control$mdrym_fve, predict(rf_all_control, test_data_control_woNA))
+sqrt(mean((test_info_control$mdrym_fve - predict(rf_all_control, as.data.frame(test_data_control_woNA)))^2))
+```
+
+
+### random forest classification: train data with 2 classes
+```{r rf cat2 train}
+input_cat2_train_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$tol_cat2_fve))
+input_cat2_train_woNA$tol <- train_info$tol_cat2_fve
+levels(input_cat2_train_woNA$tol)
+
+set.seed(1)
+rf_cat2_train <- randomForest(tol~. , data=input_cat2_train_woNA, ntree=1000)
+print(rf_cat2_train)
+
+write.table(importance(rf_cat2_train), "../output/importance_field_rf_cat2_train_valdis.txt", sep="\t")
+varImpPlot(rf_cat2_train)
+
+table(predict(rf_cat2_train, test_data_woNA), test_info$tol_cat2_fve)
+confusionMatrix(table(predict(rf_cat2_train, test_data_woNA), test_info$tol_cat2_fve))
+```
+
+
+### random forest classification: train data with 3 classes
+```{r rf cat3 train}
+input_cat3_train_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$tol_cat3_fve))
+input_cat3_train_woNA$tol <- train_info$tol_cat3_fve
+levels(input_cat3_train_woNA$tol)
+
+set.seed(1)
+rf_cat3_train <- randomForest(tol~. , data=input_cat3_train_woNA, ntree=1000)
+print(rf_cat3_train)
+
+write.table(importance(rf_cat3_train), "../output/importance_field_rf_cat3_train_valdis.txt", sep="\t")
+varImpPlot(rf_cat3_train)
+
+table(predict(rf_cat3_train, test_data_woNA), test_info$tol_cat3_fve)
+confusionMatrix(table(predict(rf_cat3_train, test_data_woNA), test_info$tol_cat3_fve))
+```
+
+
+#### Plot to separate tolerant/sensitive cultivars
+```{r Plot to separate tolerant/sensitive cultivars}
+# colnames(train_data)
+# plot(train_data_woNA[,"PGSC0003DMG400008138"], train_data_woNA[,"A177004"], col=train_info$tol_cat2_fve, pch=19)
+# plot(train_data_woNA[,"A258002"], train_data_woNA[,"A177004"], col=train_info$tol_cat3_fve, pch=19)
+# 
+# boxplot(train_data_woNA[,"PGSC0003DMG400008138"]~train_info$tol_cat3_fve)
+# boxplot(train_data[,"A177004"]~train_info$tol_cat3_fve)
+# 
+# cor.test(train_data[,"A258002"],train_info$mdrym_fve)
+# cor.test(train_data[,"A177004"],train_info$mdrym_fve)
+# 
+# cor.test(all_data[, "A258002"], all_info$mdrym_fve)
+```
+
+
+
+#### Cross-Validation
+**rfcv**: This function shows the cross-validated prediction performance of models 
+with sequentially reduced number of predictors 
+(ranked by variable importance) via a nested cross-validation procedure. 
+
+```{r rf cat3 train CV}
+set.seed(1)
+rf_cat3_train_cv <- rfcv(train_data_woNA, train_info$tol_cat3_fve, step=0.8)
+rf_cat3_train_cv$n.var
+length(rf_cat3_train_cv$n.var)
+with(rf_cat3_train_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
+
+
+# pdf("../../../../Doktorarbeit/figures/model_field_transcripts_rfcv_cat3_train.pdf", width=6, height=6)
+# par(mar=c(4.5, 4.5, 0.5, 0.6))
+# with(rf_cat3_train_cv, plot(n.var, error.cv, log="x", type="o", lwd=2, cex.lab=1.5, cex.axis=1.2,
+#                             xlab="number of predictors", ylab="5-fold cross-validation error"))
+# dev.off()
+```
+
+
+#### Variable Selection (vs)
+Using the OOB error as minimization criterion, carry out variable elimination from random forest, 
+by successively eliminating the least important variables (with importance as returned from random forest).
+```{r rf cat3 train VarSel}
+set.seed(1)
+rf_cat3_train_vs <- varSelRF(train_data_woNA, train_info$tol_cat3_fve, ntree = 500, ntreeIterat = 300, vars.drop.frac = 0.2, c.sd=1)
+#rf_cat3_train_vs <- varSelRF(train_data_woNA, train_info$tol_cat3_fve, ntree = 5000, ntreeIterat = 1000, vars.drop.frac = 0.2, c.sd=1)
+rf_cat3_train_vs
+# 27
+write.table(rf_cat3_train_vs$selected.vars, "../output/field_rf_cat3_train_selected_vars_valdis.txt", sep="\t")
+rf_cat3_train_vs$selected.vars
+plot(rf_cat3_train_vs, which=1)
+plot(rf_cat3_train_vs, which=2)
+
+# indices of selected variables
+vs_idx <- which(colnames(train_data_woNA) %in% rf_cat3_train_vs$selected.vars)
+```
+
+
+### random forest classification: selected variables from field data with 3 classes
+```{r rf cat3 train selected variables}
+train_data_woNA_vs <- train_data_woNA[,vs_idx]
+test_data_woNA_vs <- test_data_woNA[,vs_idx]
+
+input_train_cat3_woNA_vs <- as.data.frame( cbind(train_data_woNA_vs, "tol"=train_info$tol_cat3_fve))
+input_train_cat3_woNA_vs$tol <- train_info$tol_cat3_fve
+levels(input_train_cat3_woNA_vs$tol)
+
+set.seed(1)
+rf_cat3_train_reduced <- randomForest(tol~. , data=input_train_cat3_woNA_vs, ntree=1000)
+print(rf_cat3_train_reduced)
+
+write.table(importance(rf_cat3_train_reduced), "../output/importance_rf_cat3_train_reduced_valdis.txt", sep="\t")
+par(mfrow=c(1,2))
+varImpPlot(rf_cat3_train_reduced)
+varImpPlot(rf_cat3_train)
+par(mfrow=c(1,1))
+
+table(predict(rf_cat3_train_reduced, test_data_woNA_vs), test_info$tol_cat3_fve)
+confusionMatrix(table(predict(rf_cat3_train_reduced, test_data_woNA_vs), test_info$tol_cat3_fve))
+```
+
+
+### random forest classification: train control data with 3 classes
+```{r rf cat3 train control}
+input_cat3_train_control_woNA <- as.data.frame( cbind(train_data_control_woNA, "tol"=train_info_control$tol_cat3_fve))
+input_cat3_train_control_woNA$tol <- train_info_control$tol_cat3_fve
+levels(input_cat3_train_control_woNA$tol)
+
+set.seed(1)
+rf_cat3_train_control <- randomForest(tol~. , data=input_cat3_train_control_woNA, ntree=1000)
+print(rf_cat3_train_control)
+
+write.table(importance(rf_cat3_train_control), "../output/importance_field_rf_cat3_train_control_valdis.txt", sep="\t")
+varImpPlot(rf_cat3_train_control)
+
+table(predict(rf_cat3_train_control, test_data_control_woNA), test_info_control$tol_cat3_fve)
+confusionMatrix(table(predict(rf_cat3_train_control, test_data_control_woNA), test_info_control$tol_cat3_fve))
+```
+
+
+### random forest classification: all data with 3 classes
+```{r rf cat3 all}
+input_cat3_all_woNA <- as.data.frame( cbind(all_data_woNA, "tol"=all_info$tol_cat3_fve))
+input_cat3_all_woNA$tol <- all_info$tol_cat3_fve
+levels(input_cat3_all_woNA$tol)
+
+set.seed(1)
+rf_cat3_all <- randomForest(tol~. , data=input_cat3_all_woNA, ntree=1000)
+print(rf_cat3_all)
+
+write.table(importance(rf_cat3_all), "../output/importance_field_rf_cat3_all_valdis.txt", sep="\t")
+varImpPlot(rf_cat3_all)
+
+table(all_info$tol_cat3_fve, rf_cat3_all$predicted)
+```
+
+
+#### Cross-Validation
+```{r rf cat3 all CV}
+set.seed(13)
+rf_cat3_all_cv <- rfcv(all_data_woNA, all_info$tol_cat3_fve, step=0.8)
+rf_cat3_all_cv$n.var
+with(rf_cat3_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
+```
+
+
+#### Variable Selection (vs)
+```{r rf cat3 all VarSel}
+set.seed(1)
+rf_cat3_all_vs <- varSelRF(all_data_woNA, all_info$tol_cat3_fve, ntree = 500, ntreeIterat = 300, vars.drop.frac = 0.2, c.sd=1)
+rf_cat3_all_vs
+# 27
+write.table(rf_cat3_all_vs$selected.vars, "../output/field_rf_cat3_all_selected_vars_valdis.txt", sep="\t")
+rf_cat3_all_vs$selected.vars
+plot(rf_cat3_all_vs, which=1)
+plot(rf_cat3_all_vs, which=2)
+
+# indices of selected variables
+rf_cat3_all_vs_idx <- which(colnames(all_data_woNA) %in% rf_cat3_all_vs$selected.vars)
+```
+
+
+### random forest classification: selected variables from all data with 3 classes
+```{r rf cat3 all selected variables}
+all_data_woNA_vs <- all_data_woNA[,rf_cat3_all_vs_idx]
+dim(all_data_woNA_vs)
+# 202 27
+
+input_all_cat3_woNA_vs <- as.data.frame( cbind(all_data_woNA_vs, "tol"=all_info$tol_cat3_fve))
+input_all_cat3_woNA_vs$tol <- all_info$tol_cat3_fve
+levels(input_all_cat3_woNA_vs$tol)
+
+set.seed(1)
+rf_cat3_all_reduced <- randomForest(tol~. , data=input_all_cat3_woNA_vs, ntree=1000)
+print(rf_cat3_all_reduced)
+
+write.table(importance(rf_cat3_all_reduced), "../output/importance_rf_cat3_all_reduced_valdis.txt", sep="\t")
+par(mfrow=c(1,2))
+varImpPlot(rf_cat3_all_reduced)
+varImpPlot(rf_cat3_all)
+par(mfrow=c(1,1))
+```
+
+
+### random forest classification: all control data with 3 classes
+```{r rf cat3 all control}
+input_cat3_all_control_woNA <- as.data.frame( cbind(all_data_control_woNA, "tol"=all_info_control$tol_cat3_fve))
+input_cat3_all_control_woNA$tol <- all_info_control$tol_cat3_fve
+levels(input_cat3_all_control_woNA$tol)
+
+set.seed(1)
+rf_cat3_all_control <- randomForest(tol~. , data=input_cat3_all_control_woNA, ntree=1000)
+print(rf_cat3_all_control)
+
+write.table(importance(rf_cat3_all_control), "../output/importance_field_rf_cat3_all_control_valdis.txt", sep="\t")
+varImpPlot(rf_cat3_all_control)
+
+table(all_info_control$tol_cat3_fve, rf_cat3_all_control$predicted)
+```
+
+
+#######################
+
+
+### export importance tables
+```{r export importance tables}
+importance_rf_reg <- as.data.frame(cbind(importance(rf_train), 
+                            importance(rf_train_control), 
+                            importance(rf_all), 
+                            importance(rf_all_control)))
+colnames(importance_rf_reg) <- c("reg_train", "reg_train_control", "reg_all", "reg_all_control")
+head(importance_rf_reg)
+
+importance_rf_cat3 <- as.data.frame(cbind(importance(rf_cat3_train), 
+                            importance(rf_cat3_train_control), 
+                            importance(rf_cat3_all), 
+                            importance(rf_cat3_all_control)))
+colnames(importance_rf_cat3) <- c("cat3_train", "cat3_train_control", "cat3_all", "cat3_all_control")
+head(importance_rf_cat3)
+
+importance_rf <- cbind(importance_rf_reg, importance_rf_cat3)
+importance_rf_sort <- importance_rf[order(importance_rf$cat3_train),]
+head(importance_rf_sort)
+importance_rf_sort2 <- importance_rf[order(importance_rf$cat3_all),]
+
+
+# pdf("../../../../Doktorarbeit/figures/model_field_transcripts_importance_cat3_train.pdf", width=6, height=6)
+# par(mar=c(4.5, 18, 0.5, 0.5))
+# barplot(tail(importance_rf_sort$cat3_train,n=20), horiz = T, names=tail(rownames(importance_rf_sort),n=20), las=2, xaxt="n", cex.axis=1.5, cex.names=1.5)
+# axis(1, las=1)
+# title(xlab="Importance", cex.lab=1.5, cex.axis=1.2)
+# dev.off()
+
+#pdf("../../../../Doktorarbeit/figures/model_field_transcripts_importance_cat3_all.pdf", width=6, height=6)
+par(mar=c(4.5, 19, 0.5, 0.5))
+barplot(tail(importance_rf_sort2$cat3_all,n=20), horiz = T, names=tail(rownames(importance_rf_sort2),n=20), las=2, xaxt="n", cex.axis=1.5, cex.names=1.5)
+axis(1, las=1)
+title(xlab="Importance", cex.lab=1.5, cex.axis=1.2)
+#dev.off()
+
+par(mar=c(4.5, 5, 0.5, 0.5))
+
+plot(importance_rf_cat3$cat3_train, importance_rf_cat3$cat3_train_control, pch=19, cex=1.5)
+plot(importance_rf_cat3$cat3_train, importance_rf_reg$reg_train, pch=19, cex=1.5)
+plot(importance_rf_cat3$cat3_train, importance_rf_cat3$cat3_all, pch=19, cex=1.5)
+
+write.table(importance_rf_reg, "../output/field_importance_rf_reg_valdis.txt", sep="\t")
+write.table(importance_rf_cat3, "../output/field_importance_rf_cat3_valdis.txt", sep="\t")
+```
+
+
+### PLS
+#### 1. PLS (Partial Least Squares) for all variables to compute VIP
+```{r pls all}
+input_all_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$mdrym_fve))
+
+pls_all <- plsr(tol ~ ., data=input_all_woNA, validation="LOO", method="oscorespls")
+
+summary(pls_all)
+
+par(mfrow=c(1,2))
+plot(pls_all, "validation", estimate="CV")
+par(pty="s")
+plot(pls_all, "prediction", ncomp=4)
+abline(0,1, col="gray")
+par(mfrow=c(1,1))
+
+plot(RMSEP(pls_all), legendpos="topright") # Plot the root mean squared error of prediction (RMSEP) to get the number of components to be used
+
+RMSEP(pls_all)
+M.pls <- which.min(RMSEP(pls_all, estimate="adjCV")$val) - 1
+# 12 --> 11 comps!
+plot(pls_all, "validation", estimate="adjCV")
+abline(v=11, col="red")
+
+which.max(R2(pls_all)$val)
+plot(R2(pls_all))
+# 12 --> 11 comps!
+abline(v=11, col="red")
+
+test_data_woNA_2 <- as.data.frame( cbind(test_data_woNA, "tol"=test_info$mdrym_fve))
+RMSEP(pls_all, ncomp=1, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=2, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=3, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=4, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=5, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=6, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=7, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=8, newdata=test_data_woNA_2, intercept=FALSE)
+RMSEP(pls_all, ncomp=9, newdata=test_data_woNA_2, intercept=FALSE)
+
+# The interpretation of the scores and loadings is similar to PCA: a score indicates how much a particular object contributes to a latent variable, while a loading indicates the contribution of a particular variable. An example of a loading plot is obtained using the code below:
+plot(pls_all, "loading", comps = 1:3, legendpos = "top", lty = c(1, 2, 4), col = c(1, 2, 4))
+
+y.est=predict(pls_all, newdata=test_data_woNA_2, ncomp=M.pls)
+cor(y.est, test_info$mdrym_fve)
+```
+
+
+#### VIP function
+```{r VIP function}
+VIPjh=function(object, j, h)
+{
+   if (object$method!="oscorespls")
+      stop("Only implemented for orthogonal scores algorithm. Refit with 'method = \"oscorespls\"'")
+   if (nrow(object$Yloadings) > 1)
+      stop("Only implemented for single-response models")
+
+   b=c(object$Yloadings)[1:h]
+   T=object$scores[,1:h, drop=F]
+   SS=b^2 * colSums(T^2)
+   W=object$loading.weights[,1:h, drop=F]
+   Wnorm2=colSums(W^2)
+   sqrt(nrow(W) * sum(SS * W[j,]^2 / Wnorm2) / sum(SS))
+}
+```
+
+
+#### 2. Compute VIP-value for all variables and 3. Sort them accordingly
+
+```{r compute VIP values}
+p <- ncol(train_data)
+VIP=vector("numeric", p)
+I.pls=1:p
+
+for(j in 1:p)
+   VIP[j]=VIPjh(pls_all, j, M.pls)
+
+# Plot result
+pdf("Step_2.pdf")
+plot(VIP)
+dev.off()
+
+VIP_table <- cbind(colnames(train_data), VIP)
+VIP_table[order(VIP_table[,2], decreasing=T),]
+
+VIPmax=sort(VIP, decreasing=T)
+for (i in 1:p)
+I.pls[i]=which(VIP==VIPmax[i])
+
+# for 1 component:
+VIP_1=vector("numeric", p)
+for(j in 1:p)
+   VIP_1[j]=VIPjh(pls_all, j, 1)
+VIP_1_table <- cbind(colnames(train_data), VIP_1)
+VIP_1_table[order(VIP_1_table[,2], decreasing=T),]
+
+```
+
+
+### BioMark package
+```{r BioMark}
+stability_all <- get.biom(X = train_data_woNA, Y = train_info$mdrym_fve, fmethod=c("pcr", "pls", "vip", "lasso"), type = "stab")
+summary(stability_all)
+selection(stability_all)
+
+# only two class discrimination possible!
+HC_cat2 <- get.biom(X = train_data_woNA, Y = train_info$tol_cat2_fve, fmethod=c("studentt","pcr", "pls", "vip"), type = "HC")
+summary(HC_cat2)
+selection(HC_cat2)
+
+selection(HC_cat2)$pls[[1]]
+selection(HC_cat2)$vip[[1]]
+selection(HC_cat2)$pcr[[1]]
+intersect( selection(HC_cat2)$pls[[1]], selection(HC_cat2)$vip[[1]])
+colnames(train_data_control_woNA)
+```
+
+
+### lasso by glmnet ALL data
+```{r lasso by glmnet ALL data}
+
+par(mar=c(5, 5, 1, 1))
+
+# TEST data
+test_x <- as.matrix(test_data_woNA)
+test_y <- test_info$mdrym_fve
+
+# use TRAIN data
+train_x <- as.matrix(train_data_woNA)
+train_y <- train_info$mdrym_fve
+
+# use ALL data
+x <- as.matrix(all_data_woNA)
+y <- all_info$mdrym_fve
+
+#############################################################
+
+# model with TRAIN data
+set.seed(1)
+lasso_train <- glmnet(train_x, train_y)
+#plot(lasso_train)
+
+set.seed(1)
+lasso_cv_train <- cv.glmnet(train_x, train_y)
+plot(lasso_cv_train, ylim=c(0, 0.005))
+
+# use no specific lambda
+lasso_train_pred_test <- predict(lasso_train, new = test_x)
+
+# calculate mean error
+lasso_train_pred_test_err <- apply( (lasso_train_pred_test - test_y)^2, 2, mean )
+points(log(lasso_train$lambda), lasso_train_pred_test_err, col="blue", pch="*")
+
+# use minimal lamba value
+lasso_train_pred_train_lambda <- predict(lasso_cv_train, new = train_x, s="lambda.min")
+lasso_train_pred_test_lambda <- predict(lasso_cv_train, new = test_x, s="lambda.min")
+
+dim(lasso_train_pred_train_lambda)
+dim(lasso_train_pred_test_lambda)
+
+plot(train_y, lasso_train_pred_train_lambda[,1])
+cor.test(train_y, lasso_train_pred_train_lambda[,1])
+
+plot(test_y, lasso_train_pred_test_lambda[,1])
+cor.test(test_y, lasso_train_pred_test_lambda[,1])
+
+#############################################################
+
+# model with ALL data
+set.seed(1)
+lasso_all <- glmnet(x, y)
+#plot(lasso_all)
+
+set.seed(1)
+lasso_cv_all <- cv.glmnet(x, y)
+plot(lasso_cv_all, ylim=c(0, 0.005))
+
+# plot CV mean error vs. lambda and number of non-zero coef vs. lambda
+pdf("../figures/valdis/lasso_cv_all_lambda_2.pdf")
+par(mar=c(5,5,3,5))
+plot(lasso_cv_all$lambda, lasso_cv_all$cvm, type="l", lwd=2, 
+     xlab="lambda", ylab="CV mean error", cex.lab=1.5, 
+     main="transcript lasso model: CV mean error vs. lambda \n and number of variables vs. lambda")
+grid(NA, 8, lwd = 2) # grid only in y-direction
+#abline(v=lasso_cv_all$lambda.min, lty=2, col="red", lwd=2)
+#text(0.004, 0.0015, "lambda.min", col="red")
+abline(v=lasso_cv_all$lambda.1se, lty=2, col="green", lwd=2)
+text(0.004, 0.0013, "lambda.1se", col="green", cex=1.3)
+par(new=TRUE)
+plot(lasso_cv_all$lambda, lasso_cv_all$nzero, type="l", lwd=2 ,col="blue",xaxt="n",yaxt="n",xlab="",ylab="")
+axis(4, col="blue", col.ticks="blue") # add second y-axis
+mtext("number of variables",side=4,line=3, col="blue", cex=1.5)
+dev.off()
+
+# use no specific lambda
+lasso_all_pred_test <- predict(lasso_all, new = test_x)
+
+# calculate mean error
+lasso_all_pred_test_err <- apply( (lasso_all_pred_test - test_y)^2, 2, mean )
+points(log(lasso_all$lambda), lasso_all_pred_test_err, col="blue", pch="*")
+
+# use optimal lamba value
+lasso_all_pred_all_lambda <- predict(lasso_cv_all, new = x, s="lambda.min")
+lasso_all_pred_test_lambda <- predict(lasso_cv_all, new = test_x, s="lambda.min")
+
+dim(lasso_train_pred_test_lambda)
+
+plot(lasso_train_pred_test_lambda, lasso_all_pred_test_lambda)
+plot(test_y, lasso_all_pred_test_lambda)
+
+# extract coefficients at a single value of lambda
+coef(lasso_all,s=0.01)
+coef(lasso_all,s=0.001)
+coef(lasso_all,s=0.0001)
+# smaller value for s --> more coefficients kept in model
+# higher value for s --> less coefficients kept in model
+
+lasso_cv_all_coef <- predict(lasso_cv_all, type="coefficients", s=lasso_cv_all$lambda.min)
+write.table(as.matrix(lasso_cv_all_coef), "../output/valdis/lasso_cv_all_coef.txt", sep="\t")
+
+lasso_cv_all_coef_1se <- predict(lasso_cv_all, type="coefficients", s=lasso_cv_all$lambda.1se)
+write.table(as.matrix(lasso_cv_all_coef_1se), "../output/valdis/lasso_cv_all_coef_1se.txt", sep="\t")
+
+# identical result:
+coef(lasso_cv_all , s = "lambda.min") # 5 variables (of 42) have coef of zero --> 37 left
+coef(lasso_cv_all , s = "lambda.1se") # 19 variables (of 42) have coef of zero --> 23 left
+
+# plot RF vs LASSO coefficients/importance
+plot(importance(rf_all), abs(as.matrix(coef(lasso_cv_all , s = 1.838797e-05))[-1,]))
+plot(abs(as.matrix(coef(lasso_cv_all , s = 1.838797e-05))))
+varImpPlot(rf_all)
+
+#############################################################
+
+
+par(mfrow=c(1,2))
+
+# predict test data
+plot(test_y, lasso_all_pred_test_lambda, pch=19, yaxt="n", xaxt="n", main="lasso", xlim=c(-0.1, 0.1), ylim=c(-0.1, 0.1))
+axis(1, at=seq(-0.1, 0.1, 0.01))
+axis(2, at=seq(-0.1, 0.1, 0.01))
+abline(0,1, col="red")
+
+
+# plot for random forest model
+plot(test_info$mdrym_fve, predict(rf_all, test_data_woNA), pch=19, yaxt="n", xaxt="n", main="random forest", xlim=c(-0.1, 0.1), ylim=c(-0.1, 0.1))
+axis(1, at=seq(-0.1, 0.1, 0.01))
+axis(2, at=seq(-0.1, 0.1, 0.01))
+abline(0,1, col="red")
+
+
+# predict training data (here: all data were used for training)
+plot(y, lasso_all_pred_all_lambda, pch=19, yaxt="n", xaxt="n", main="lasso", xlim=c(-0.1, 0.1), ylim=c(-0.1, 0.1))
+axis(1, at=seq(-0.1, 0.1, 0.01))
+axis(2, at=seq(-0.1, 0.1, 0.01))
+abline(0,1, col="red")
+
+# plot for random forest model
+plot(all_info$mdrym_fve, rf_all$predicted, pch=19, yaxt="n", xaxt="n", main="random forest", xlim=c(-0.1, 0.1), ylim=c(-0.1, 0.1))
+axis(1, at=seq(-0.1, 0.1, 0.01))
+axis(2, at=seq(-0.1, 0.1, 0.01))
+abline(0,1, col="red")
+
+
+par(mfrow=c(1,1))
+```
+
+
+
+## predict DRYM (numeric tolerance) from VALDIS data
+```{r lasso predict DRYM (numeric tolerance) from VALDIS data}
+#log_norm_ct_valdis_woNA
+
+# use minimal lamba value
+lasso_all_predicted_drym_valdis <- predict(lasso_cv_all, new = as.matrix(log_norm_ct_valdis_woNA), s="lambda.min")
+
+# use largest value of lambda such that CV-error is within 1 standard error of the minimum (ca. 50 metabolites)
+lasso_all_predicted_drym_valdis_1se <- predict(lasso_cv_all, new = as.matrix(log_norm_ct_valdis_woNA), s="lambda.1se")
+
+summary(lasso_all_predicted_drym_valdis)
+summary(rf_all_predicted_drym_valdis)
+
+hist(lasso_all_predicted_drym_valdis[,1])
+hist(rf_all_predicted_drym_valdis)
+
+# random forest vs. lasso prediction of DRYM
+plot(lasso_all_predicted_drym_valdis[,1], rf_all_predicted_drym_valdis)
+plot(lasso_all_predicted_drym_valdis_1se[,1], rf_all_predicted_drym_valdis)
+
+pdf("../figures/valdis/boxplot_compare_rf_lasso_predicted_drym.pdf", 5,5)
+boxplot(rf_all_predicted_drym_valdis, lasso_all_predicted_drym_valdis[,1], names=c("Random Forest", "LASSO"), 
+        ylab="DRYM", cex.axis=1.2, cex.lab=1.4, main="transcript model")
+dev.off()
+
+# plot model with minimal CV-error (37 transcripts) vs. model with CV-error within 1SE (23 transcripts)
+plot(lasso_all_predicted_drym_valdis[,1], lasso_all_predicted_drym_valdis_1se[,1],
+     xlim=c(-0.1, 0.12), ylim=c(-0.1, 0.12))
+abline(0,1, col="red")
+```
+
+
+
+### sort and aggregate drym values
+```{r lasso sort and aggregate drym values}
+# remove DESIREE
+lasso_all_predicted_drym_valdis_without_desiree <- subset(lasso_all_predicted_drym_valdis,
+                                            samplelist_valdis$name != "Desiree")
+
+samplelist_valdis_without_desiree <- subset(samplelist_valdis,
+                                            samplelist_valdis$name != "Desiree")
+
+samplelist_valdis_without_desiree <- droplevels(samplelist_valdis_without_desiree)
+
+# join predicted DRYM values with line names
+lasso_all_predicted_drym_valdis_line <- data.frame(drym = lasso_all_predicted_drym_valdis_without_desiree[,1], 
+                                                line = samplelist_valdis_without_desiree$name)
+head(lasso_all_predicted_drym_valdis_line)
+
+# aggregate median and sort
+lasso_all_predicted_drym_valdis_median <- aggregate(lasso_all_predicted_drym_valdis_line$drym, 
+                                                 by=list(lasso_all_predicted_drym_valdis_line$line),
+                                                 median)
+colnames(lasso_all_predicted_drym_valdis_median) <- c("line", "drym")
+lasso_all_predicted_drym_valdis_median_sorted <- lasso_all_predicted_drym_valdis_median[order(lasso_all_predicted_drym_valdis_median$drym),]
+
+# save median of predicted drym
+head(lasso_all_predicted_drym_valdis_median)
+write.table(lasso_all_predicted_drym_valdis_median, "../output/valdis/lasso_all_predicted_drym_valdis_median.txt", sep="\t", row.names=F)
+
+# sort predicted DRYM values for plot
+lasso_all_predicted_drym_valdis_sorted <- with(lasso_all_predicted_drym_valdis_line, reorder(line, drym, median, na.rm=T))
+head(lasso_all_predicted_drym_valdis_sorted)
+```
+
+
+### sort and aggregate drym values (1SE model)
+```{r lasso sort and aggregate drym values (1SE model)}
+# join predicted DRYM values with line names
+lasso_all_predicted_drym_valdis_line_1se <- data.frame(drym = lasso_all_predicted_drym_valdis_1se[,1], 
+                                                line = samplelist_valdis$name)
+
+# aggregate median 
+lasso_all_predicted_drym_valdis_median_1se <- aggregate(lasso_all_predicted_drym_valdis_line_1se$drym, 
+                                                 by=list(lasso_all_predicted_drym_valdis_line_1se$line),
+                                                 median)
+colnames(lasso_all_predicted_drym_valdis_median_1se) <- c("line", "drym")
+
+# save median of predicted drym
+write.table(lasso_all_predicted_drym_valdis_median_1se, 
+            "../output/valdis/lasso_all_predicted_drym_valdis_median_1se.txt", 
+            sep="\t", row.names=F)
+```
+
+
+### top35
+```{r lasso top35}
+lasso_sens35 <- head(lasso_all_predicted_drym_valdis_median_sorted$line, n=35)
+lasso_tol35 <- tail(lasso_all_predicted_drym_valdis_median_sorted$line, n=35)
+
+lasso_sens35_idx <- which(lasso_all_predicted_drym_valdis_line$line %in% lasso_sens35)
+lasso_tol35_idx <- which(lasso_all_predicted_drym_valdis_line$line %in% lasso_tol35)
+
+lasso_all_predicted_drym_valdis_line_sens35 <- lasso_all_predicted_drym_valdis_line[lasso_sens35_idx,]
+lasso_all_predicted_drym_valdis_line_tol35 <- lasso_all_predicted_drym_valdis_line[lasso_tol35_idx,]
+
+# sort
+lasso_all_predicted_drym_valdis_line_sens35_sorted <- with(lasso_all_predicted_drym_valdis_line_sens35, 
+                                                           reorder(line, drym, median, na.rm=T))
+lasso_all_predicted_drym_valdis_line_sens35_sorted <- droplevels(lasso_all_predicted_drym_valdis_line_sens35_sorted)
+lasso_all_predicted_drym_valdis_line_tol35_sorted <- with(lasso_all_predicted_drym_valdis_line_tol35, 
+                                                          reorder(line, drym, median, na.rm=T))
+lasso_all_predicted_drym_valdis_line_tol35_sorted <- droplevels(lasso_all_predicted_drym_valdis_line_tol35_sorted)
+```
+
+
+### define colors
+```{r lasso define colors}
+lasso_color <- rep("#00756D", 198) # for ExA
+lasso_color [which( grepl("^AxR", levels(lasso_all_predicted_drym_valdis_sorted) ))] <- "#BF5300"
+lasso_color [which( levels (lasso_all_predicted_drym_valdis_sorted) == "Albatros" )] <- "grey"
+lasso_color [which( levels (lasso_all_predicted_drym_valdis_sorted) == "Euroresa" )] <- "#5778B9"
+lasso_color [which( levels (lasso_all_predicted_drym_valdis_sorted) == "Ramses" )] <- "#F7B944"
+lasso_color_fac <- factor(lasso_color)
+
+lasso_color_sens35 <- rep("#00756D", 35)
+lasso_color_sens35 [which( grepl("^AxR", levels(lasso_all_predicted_drym_valdis_line_sens35_sorted) ))] <- "#BF5300"
+lasso_color_sens35 [which( levels (lasso_all_predicted_drym_valdis_line_sens35_sorted) == "Albatros" )] <- "grey"
+lasso_color_sens35 [which( levels (lasso_all_predicted_drym_valdis_line_sens35_sorted) == "Euroresa" )] <- "#5778B9"
+lasso_color_sens35 [which( levels (lasso_all_predicted_drym_valdis_line_sens35_sorted) == "Ramses" )] <- "#F7B944"
+
+lasso_color_tol35 <- rep("#00756D", 35)
+lasso_color_tol35 [which( grepl("^AxR", levels(lasso_all_predicted_drym_valdis_line_tol35_sorted) ))] <- "#BF5300"
+lasso_color_tol35 [which( levels (lasso_all_predicted_drym_valdis_line_tol35_sorted) == "Albatros" )] <- "grey"
+lasso_color_tol35 [which( levels (lasso_all_predicted_drym_valdis_line_tol35_sorted) == "Euroresa" )] <- "#5778B9"
+lasso_color_tol35 [which( levels (lasso_all_predicted_drym_valdis_line_tol35_sorted) == "Ramses" )] <- "#F7B944"
+
+```
+
+
+
+### boxplot predicted drym
+```{r lasso boxplot predicted drym}
+
+pdf("../figures/valdis/boxplot_lasso_all_predicted_drym.pdf", width=6, height=5)
+par(mar=c(3,5,2,1))
+boxplot(lasso_all_predicted_drym_valdis_without_desiree ~ samplelist_valdis_without_desiree$crossing, ylab="DRYM", 
+        cex.lab=1.5, cex.axis=1.1, main = "transcript model", col=cols_genotype_report[c(3,4,1,2,5)], 
+        ylim=c(-0.2, 0.15), yaxt="n")
+axis(side=2, labels=c("-0.2", "-0.1", "0", "0.1"), at=c(-0.2, -0.1, 0, 0.1), cex.axis=1.1)
+dev.off()
+
+
+pdf("../figures/valdis/boxplot_lasso_all_predicted_drym_line.pdf", width=12, height=6)
+par(mar=c(4.5,5,2,0.5))
+boxplot(lasso_all_predicted_drym_valdis ~ samplelist_valdis$name, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=0.7, las=2, main = "transcript model")
+boxplot(drym ~ lasso_all_predicted_drym_valdis_sorted, data = lasso_all_predicted_drym_valdis_line, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=0.7, las=2, col=lasso_color, main = "transcript model", names=F, xlab="genotype")
+legend("bottomright", fill=levels(lasso_color_fac), legend=c("ExA", "Euroresa", "AxR", "Ramses", "Albatros"), horiz=T)
+dev.off()
+
+# SENS 35
+pdf("../figures/valdis/boxplot_lasso_all_predicted_drym_line_sens35.pdf", width=10, height=5)
+par(mar=c(7,5,1,1))
+boxplot(drym ~ lasso_all_predicted_drym_valdis_line_sens35_sorted, data = lasso_all_predicted_drym_valdis_line_sens35, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=1.2, las=2, col=lasso_color_sens35, main = "transcript model: sens35")
+legend("bottomright", fill=levels(lasso_color_fac), legend=c("ExA", "Euroresa", "AxR", "Ramses", "Albatros"), cex=0.9)
+dev.off()
+
+# TOL 35
+pdf("../figures/valdis/boxplot_lasso_all_predicted_drym_line_tol35.pdf", width=10, height=5)
+par(mar=c(7,5,1,1))
+boxplot(drym ~ lasso_all_predicted_drym_valdis_line_tol35_sorted, data = lasso_all_predicted_drym_valdis_line_tol35, 
+        ylab="DRYM", cex.lab=1.5, cex.axis=1.2, las=2, col=lasso_color_tol35, main = "transcript model: tol35")
+legend("bottomright", fill=levels(lasso_color_fac), legend=c("ExA", "Euroresa", "AxR", "Ramses", "Albatros"), cex=0.9)
+dev.off()
+```
+
+
+
+
+
+```{r correlation of variables}
+corr_test_all_data <- corr.test(all_data_woNA, adjust="BH")
+dim(corr_test_all_data$p)
+
+write.table(corr_test_all_data$r, "../output/valdis/corr_test_all_data_r.txt", sep="\t")
+write.table(corr_test_all_data$p, "../output/valdis/corr_test_all_data_p.txt", sep="\t")
+
+# slow!
+# corrgram(corr_test_all_data$r, order=TRUE, lower.panel=panel.shade, upper.panel=NULL, text.panel=panel.txt)
+
+pdf("../figures/valdis/corrplot_all_data.pdf",10,10)
+corrplot(corr_test_all_data$r, method="color", order="hclust", hclust.method="average", tl.col="black", tl.cex=0.5)
+dev.off()
+```
+
+
+```{r save workspace}
+save.image("qpcr_model_field_valdis.RData")
+```
+

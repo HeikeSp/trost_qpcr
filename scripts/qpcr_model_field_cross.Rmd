@@ -1,0 +1,228 @@
+Prediction Model using qPCR data
+Field Models were trained on 2 datasets and tested on another independent field trial
+Resulted in 3 combinations
+========================================================
+
+```{r setup}
+setwd("TROST/Sequencing/qpcr_data/scripts/")
+load("qpcr_model_field_cross.RData")
+```
+
+### Load packages
+```{r load packages}
+library("rpart")
+library("randomForest")
+library("partykit")
+library("party")
+library(caret) 
+library(pls)
+library(BioMark)
+library(plyr)
+```
+
+### Define samplelist
+```{r define samplelist}
+tolerance <- read.table("../../../Prediction_Model/output/tolerance_phenotyper_metadata_2sub.txt", sep="\t", header=TRUE)
+samplelist <- read.table("../output/samplelist.txt", header=TRUE, sep="\t")
+
+tolerance$tol_cat2_fve <- factor(tolerance$tol_cat2_fve, levels = c("low", "high"))
+tolerance$tol_cat3_fve <- factor(tolerance$tol_cat3_fve, levels = c("low", "mid", "high"))
+
+# join metadata
+head(tolerance)
+head(samplelist)
+
+# join samplelist
+samplelist_joined <- join(samplelist, tolerance, by="subspecies_id")
+samplelist_field <- subset(samplelist_joined, samplelist_joined$cultivation=="field")
+```
+
+
+### data without NAs from PCA (rnipals, no scaling)
+```{r data without NAs}
+log_norm_ct_woNA <- read.table("../output/log_norm_ct_prep_none_rnipals_completeObs.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_woNA)
+log_norm_ct_field_woNA <- subset(log_norm_ct_woNA, samplelist$cultivation=="field")
+dim(log_norm_ct_field_woNA)
+
+##### all #### with 31 cultivars
+all_data_woNA <- subset(log_norm_ct_field_woNA, !samplelist_field$model_set=="NA")
+all_info <- subset (samplelist_field, !samplelist_field$model_set=="NA")
+```
+
+#### training data
+```{r training data}
+# training: two trials
+mpi2011_jki2012_data <- subset (all_data_woNA, 
+                                all_info$trial=="mpi_feld_2011" | all_info$trial=="jki_feld_2012")
+mpi2011_jki2012_info <- subset (all_info, 
+                                all_info$trial=="mpi_feld_2011" | all_info$trial=="jki_feld_2012")
+
+mpi2011_mpi2012_data <- subset (all_data_woNA, 
+                                all_info$trial=="mpi_feld_2011" | all_info$trial=="mpi_feld_2012")
+mpi2011_mpi2012_info <- subset (all_info, 
+                                all_info$trial=="mpi_feld_2011" | all_info$trial=="mpi_feld_2012")
+
+mpi2012_jki2012_data <- subset (all_data_woNA, 
+                                all_info$trial=="mpi_feld_2012" | all_info$trial=="jki_feld_2012")
+mpi2012_jki2012_info <- subset (all_info, 
+                                all_info$trial=="mpi_feld_2012" | all_info$trial=="jki_feld_2012")
+```
+
+#### test data
+```{r test data}
+# test: single trial
+mpi2011_data <- subset (all_data_woNA,  all_info$trial=="mpi_feld_2011")
+mpi2011_info <- subset (all_info, all_info$trial=="mpi_feld_2011")
+
+mpi2012_data <- subset (all_data_woNA, all_info$trial=="mpi_feld_2012")
+mpi2012_info <- subset (all_info, all_info$trial=="mpi_feld_2012")
+
+jki2012_data <- subset (all_data_woNA, all_info$trial=="jki_feld_2012")
+jki2012_info <- subset (all_info, all_info$trial=="jki_feld_2012")
+```
+
+
+### random forest classification: train data
+#### train data: mpi2011, jki2012
+#### test data: mpi2012
+```{r rf cat3 mpi2011_jki2012}
+input_cat3_mpi2011_jki2012 <- as.data.frame( cbind(mpi2011_jki2012_data, 
+                                              "tol"=mpi2011_jki2012_info$tol_cat3_fve))
+
+set.seed(2)
+rf_cat3_mpi2011_jki2012 <- randomForest(tol~. , data=input_cat3_mpi2011_jki2012, ntree=1000)
+print(rf_cat3_mpi2011_jki2012)
+
+#importance(rf_cat3_mpi2011_jki2012)
+varImpPlot(rf_cat3_mpi2011_jki2012)
+
+table(mpi2011_jki2012_info$tol_cat3_fve, rf_cat3_mpi2011_jki2012$predicted)
+
+table(predict(rf_cat3_mpi2011_jki2012, mpi2012_data), mpi2012_info$tol_cat3_fve)
+#       low mid high
+#  low   22   3    1
+#  mid    0  15    0
+#  high   2   6   21
+
+confusionMatrix(table(predict(rf_cat3_mpi2011_jki2012, mpi2012_data), mpi2012_info$tol_cat3_fve))
+```
+
+
+#### train data: mpi2011, mpi2012
+#### test data: jki2012
+```{r rf cat3 mpi2011_mpi2012}
+input_cat3_mpi2011_mpi2012 <- as.data.frame( cbind(mpi2011_mpi2012_data, 
+                                              "tol"=mpi2011_mpi2012_info$tol_cat3_fve))
+
+set.seed(2)
+rf_cat3_mpi2011_mpi2012 <- randomForest(tol~. , data=input_cat3_mpi2011_mpi2012, ntree=1000)
+print(rf_cat3_mpi2011_mpi2012)
+
+#importance(rf_cat3_mpi2011_mpi2012)
+varImpPlot(rf_cat3_mpi2011_mpi2012)
+
+table(mpi2011_mpi2012_info$tol_cat3_fve, rf_cat3_mpi2011_mpi2012$predicted)
+
+table(predict(rf_cat3_mpi2011_mpi2012, jki2012_data), jki2012_info$tol_cat3_fve)
+#       low mid high
+#  low   17   0    1
+#  mid    3  22    6
+#  high   0   0   13
+confusionMatrix(table(predict(rf_cat3_mpi2011_mpi2012, jki2012_data), jki2012_info$tol_cat3_fve))
+```
+
+
+#### train data: jki2012, mpi2012
+#### test data: mpi2011
+```{r rf cat3 mpi2012_jki2012}
+input_cat3_mpi2012_jki2012 <- as.data.frame( cbind(mpi2012_jki2012_data, 
+                                              "tol"=mpi2012_jki2012_info$tol_cat3_fve))
+
+set.seed(2)
+rf_cat3_mpi2012_jki2012 <- randomForest(tol~. , data=input_cat3_mpi2012_jki2012, ntree=1000)
+print(rf_cat3_mpi2012_jki2012)
+
+#importance(rf_cat3_mpi2012_jki2012)
+varImpPlot(rf_cat3_mpi2012_jki2012)
+
+table(mpi2012_jki2012_info$tol_cat3_fve, rf_cat3_mpi2012_jki2012$predicted)
+
+table(predict(rf_cat3_mpi2012_jki2012, mpi2011_data), mpi2011_info$tol_cat3_fve)
+#       low mid high
+#  low   22   0    0
+#  mid    1  22    2
+#  high   1   2   20
+confusionMatrix(table(predict(rf_cat3_mpi2012_jki2012, mpi2011_data), mpi2011_info$tol_cat3_fve))
+```
+
+
+
+### random forest regression
+#### train data: mpi2011, jki2012
+#### test data: mpi2012
+```{r rf reg mpi2011_jki2012}
+input_reg_mpi2011_jki2012 <- as.data.frame( cbind(mpi2011_jki2012_data, 
+                                              "tol"=mpi2011_jki2012_info$mdrym_fve))
+
+rf_reg_mpi2011_jki2012 <- randomForest(tol~. , data=input_reg_mpi2011_jki2012, ntree=1000)
+print(rf_reg_mpi2011_jki2012)
+
+#importance(rf_reg_mpi2011_jki2012)
+varImpPlot(rf_reg_mpi2011_jki2012)
+
+plot(rf_reg_mpi2011_jki2012$predicted, mpi2011_jki2012_info$mdrym_fve, xlab="predicted", ylab="observed")
+
+plot(predict(rf_reg_mpi2011_jki2012, mpi2012_data), mpi2012_info$mdrym_fve, xlab="predicted", ylab="observed", pch=19)
+sqrt(mean((mpi2012_info$mdrym_fve - predict(rf_reg_mpi2011_jki2012, mpi2012_data))^2))
+```
+
+
+#### train data: mpi2011, mpi2012
+#### test data: jki2012
+```{r rf reg mpi2011_mpi2012}
+input_reg_mpi2011_mpi2012 <- as.data.frame( cbind(mpi2011_mpi2012_data, 
+                                              "tol"=mpi2011_mpi2012_info$mdrym_fve))
+
+rf_reg_mpi2011_mpi2012 <- randomForest(tol~. , data=input_reg_mpi2011_mpi2012, ntree=1000)
+print(rf_reg_mpi2011_mpi2012)
+
+#importance(rf_reg_mpi2011_mpi2012)
+varImpPlot(rf_reg_mpi2011_mpi2012)
+
+plot(mpi2011_mpi2012_info$mdrym_fve, rf_reg_mpi2011_mpi2012$predicted)
+
+plot(predict(rf_reg_mpi2011_mpi2012, jki2012_data), jki2012_info$mdrym_fve, xlab="predicted", ylab="observed", pch=19)
+sqrt(mean((jki2012_info$mdrym_fve - predict(rf_reg_mpi2011_mpi2012, jki2012_data))^2))
+```
+
+
+#### train data: jki2012, mpi2012
+#### test data: mpi2011
+```{r rf reg mpi2012_jki2012}
+input_reg_mpi2012_jki2012 <- as.data.frame( cbind(mpi2012_jki2012_data, 
+                                              "tol"=mpi2012_jki2012_info$mdrym_fve))
+
+rf_reg_mpi2012_jki2012 <- randomForest(tol~. , data=input_reg_mpi2012_jki2012, ntree=1000)
+print(rf_reg_mpi2012_jki2012)
+
+#importance(rf_reg_mpi2012_jki2012)
+varImpPlot(rf_reg_mpi2012_jki2012)
+
+plot(mpi2012_jki2012_info$mdrym_fve, rf_reg_mpi2012_jki2012$predicted)
+
+plot(predict(rf_reg_mpi2012_jki2012, mpi2011_data), mpi2011_info$mdrym_fve, 
+     xlab="predicted", ylab="observed", pch=19, 
+     xlim=c(min(mpi2011_info$mdrym_fve), max(mpi2011_info$mdrym_fve)), 
+     ylim=c(min(mpi2011_info$mdrym_fve), max(mpi2011_info$mdrym_fve)))
+abline(0,1, col="red")
+
+sqrt(mean((mpi2011_info$mdrym_fve - predict(rf_reg_mpi2012_jki2012, mpi2011_data))^2))
+```
+
+
+
+```{r save workspace}
+save.image("qpcr_model_field_cross.RData")
+```
+

@@ -1,0 +1,874 @@
+---
+title: "Analysis of qRT-PCR data from VALDIS trials 2014"
+author: "Heike Sprenger"
+date: "Thursday, March 24, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 4
+---
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_data_valdis.RData")
+```
+
+
+# Source R functions
+```{r source R functions}
+source("../functions/colors.R")
+source("../functions/func_histograms.R")
+source("../functions/func_prep_pca.R")
+source("../functions/func_pca_plots.R")
+```
+
+
+# Load sample information and modify them
+```{r load sample information}
+samplelist <- read.table("input/valdis/samplelist.txt", header=TRUE, sep="\t")
+
+# remove 5 samples that could not be measured: 920897, 920922, 922294, 922503, 922554
+samplelist <- samplelist[-which(samplelist$sampleID %in% c(920897, 920922, 922294, 922503, 922554)), ]
+
+# order samlelist by ID
+samplelist <- samplelist[order(samplelist$sampleID),]
+
+# rename levels of trials
+levels(samplelist$trial) <- c("JKI Shelter 2014", "MPI FGH 2014")
+
+table(samplelist$machine, samplelist$trial)
+samplelist$machine <- droplevels(samplelist$machine)
+samplelist$sector <- droplevels(samplelist$sector)
+table(samplelist$sector)
+
+# # add factor cultivation to samplelist
+# cultivation <- rep("field", 356)
+# cultivation[which(samplelist$trial %in% c("mpi_pruef1", "mpi_pruef3"))] <- "pot"
+# samplelist <- cbind(samplelist, cultivation)
+# levels(samplelist$cultivation)
+
+# samplelist$subspecies_id2 <- as.factor(samplelist$subspecies_id)
+# levels(samplelist$subspecies_id2)[1:4] <- c("Desiree", "Alegria", "Milva", "Saturna")
+
+write.table(samplelist, "output/valdis/samplelist.txt", sep="\t")
+
+# additional column for crossing (general factor for parents)
+samplelist$crossing2 <- samplelist$crossing
+samplelist$crossing[which(samplelist$crossing %in% c("Ramses", "Euroresa", "Albatros"))] <- "Ramses"
+samplelist$crossing <- droplevels(samplelist$crossing)
+levels(samplelist$crossing)[4] <- "parents"
+
+# subset of samplelists for trials
+samplelist_mpi <- droplevels(subset(samplelist, samplelist$trial=="MPI FGH 2014"))
+samplelist_jki <- droplevels(subset(samplelist, samplelist$trial=="JKI Shelter 2014"))
+```
+
+
+# Load qpcr raw data (after cleaning) and modify them
+```{r load data}
+rawdata <- read.table("input/valdis/rawdata.txt", header=TRUE, sep="\t")
+
+rawdata <- rawdata[,-c(1,3)]
+head(rawdata)
+colnames(rawdata) <- c("gene_id", "value", "sample_id")
+
+class(rawdata$value)
+summary(rawdata$value)
+
+rawdata_cast <- cast(rawdata, sample_id ~ gene_id, value="value")
+dim(rawdata_cast)
+# rows: 803 samples
+# columns 48 genes
+
+rawdata_ct <- rawdata_cast[,2:48]
+dim(rawdata_ct)
+rownames(rawdata_ct) <- rawdata_cast$sample_id
+
+# order by DMT id
+rawdata_ct <- rawdata_ct[, order(colnames(rawdata_ct))]
+
+# values without HK genes 
+HK_index <- which(colnames(rawdata_ct) %in% c("PGSC0003DMT400030611", 
+                                              "PGSC0003DMT400068117", 
+                                              "PGSC0003DMT400037585", 
+                                              "PGSC0003DMT400080569"))
+
+rawdata_ct_woHK <-rawdata_ct[,-HK_index]
+dim(rawdata_ct_woHK)
+# 803 samples, 43 genes
+```
+
+
+# Plot ct values
+```{r plot ct values, fig.width=12}
+# boxplot of all ct-values vs. genes, HK genes are column 15,22,36,42 (ordered by ID)
+color <- rep("grey", 47)
+color[c(15,22,36,42)] <- "red"
+boxplot(rawdata_ct, las=2, col=color)
+
+# boxplot only for HKG
+boxplot(rawdata_ct[,c(15,22,36,42)], las=2)
+
+# plot of HK gene 1 vs. HK gene 2
+pairs(rawdata_ct[,c(15,22,36,42)])
+plot(rawdata_ct[,36], rawdata_ct[,15])
+#identify(rawdata_ct[,36], rawdata_ct[,15])
+rawdata_ct[639,]
+
+plot(rawdata_ct[,22], rawdata_ct[,36])
+#identify(rawdata_ct[,22], rawdata_ct[,36])
+# 50
+rawdata_ct[50,]
+
+# replace outlier for sample 920913 (line 50) by NA regarding HKG9 (PGSC0003DMT400068117, column 36)
+rawdata_ct[50,36] <- NA
+
+# histogram of ct-values per gene
+pdf("figures/valdis/hist_rawdata_ct.pdf")
+for (i in 1:43){
+hist(rawdata_ct_woHK[,i], breaks = 30, col="grey", 
+     main = colnames(rawdata_ct_woHK)[i])
+}
+dev.off()
+
+# pairs plot of first 10 genes
+pairs(rawdata_ct_woHK[,1:10])
+```
+
+
+# Histograms
+## Histograms: both trials
+```{r histograms: both trials}
+rawdata_ct_woHK_2 <- as.data.frame(rawdata_ct_woHK)
+rawdata_ct_woHK_2$trial <- samplelist$trial
+rawdata_ct_woHK_2$treatment <- samplelist$treatment
+rawdata_ct_woHK_2$crossing <- samplelist$crossing2
+
+rawdata_ct_woHK_2$id <- rownames(rawdata_ct_woHK)
+#rownames(rawdata_ct_woHK_2) <- NULL
+rawdata_ct_woHK_melt <- melt(rawdata_ct_woHK_2)
+rawdata_ct_woHK_melt <- rawdata_ct_woHK_melt[order(rawdata_ct_woHK_melt$variable),]
+
+# TREATMENT
+pdf("figures/valdis/rawdata_ct_woHK_hist_treatment.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset <- subset(rawdata_ct_woHK_melt, rawdata_ct_woHK_melt$variable == levels(rawdata_ct_woHK_melt$variable)[i])
+sub_dataset <- droplevels(sub_dataset)
+func_histograms_treatment(sub_dataset) 
+}
+dev.off()
+
+# TRIAL
+pdf("figures/valdis/rawdata_ct_woHK_hist_trial.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset <- subset(rawdata_ct_woHK_melt, rawdata_ct_woHK_melt$variable == levels(rawdata_ct_woHK_melt$variable)[i])
+sub_dataset <- droplevels(sub_dataset)
+func_histograms_trial(sub_dataset) 
+}
+dev.off()
+
+# CROSSING
+# remove parental line samples!
+rawdata_ct_woHK_melt_crossing <- subset(rawdata_ct_woHK_melt, rawdata_ct_woHK_melt$crossing %in% c("AxR", "ExA"))
+pdf("figures/valdis/rawdata_ct_woHK_hist_crossing.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset <- subset(rawdata_ct_woHK_melt_crossing, 
+                      rawdata_ct_woHK_melt_crossing$variable == levels(rawdata_ct_woHK_melt_crossing$variable)[i])
+sub_dataset <- droplevels(sub_dataset)
+func_histograms_crossing(sub_dataset) 
+}
+dev.off()
+```
+
+
+## Histograms: MPI trial
+```{r histograms: MPI trial}
+rawdata_ct_woHK_mpi <- as.data.frame(rawdata_ct_woHK[1:410,])
+rawdata_ct_woHK_mpi$trial <- samplelist_mpi$trial
+rawdata_ct_woHK_mpi$treatment <- samplelist_mpi$treatment
+rawdata_ct_woHK_mpi$crossing <- samplelist_mpi$crossing2
+
+rawdata_ct_woHK_mpi$id <- rownames(rawdata_ct_woHK_mpi)
+rawdata_ct_woHK_mpi_melt <- melt(rawdata_ct_woHK_mpi)
+rawdata_ct_woHK_mpi_melt <- rawdata_ct_woHK_mpi_melt[order(rawdata_ct_woHK_mpi_melt$variable),]
+
+source("../functions/func_histograms.R")
+
+# TREATMENT
+pdf("figures/valdis/rawdata_ct_woHK_mpi_hist_treatment.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset_mpi <- subset(rawdata_ct_woHK_mpi_melt, 
+                          rawdata_ct_woHK_mpi_melt$variable == levels(rawdata_ct_woHK_mpi_melt$variable)[i])
+sub_dataset_mpi <- droplevels(sub_dataset_mpi)
+func_histograms_treatment(sub_dataset_mpi)
+}
+dev.off()
+
+# CROSSING
+rawdata_ct_woHK_mpi_melt_crossing <- subset(rawdata_ct_woHK_mpi_melt, rawdata_ct_woHK_mpi_melt$crossing %in% c("AxR", "ExA"))
+pdf("figures/valdis/rawdata_ct_woHK_mpi_hist_crossing.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset_mpi <- subset(rawdata_ct_woHK_mpi_melt_crossing, 
+                          rawdata_ct_woHK_mpi_melt_crossing$variable == levels(rawdata_ct_woHK_mpi_melt_crossing$variable)[i])
+sub_dataset_mpi <- droplevels(sub_dataset_mpi)
+func_histograms_crossing(sub_dataset_mpi) 
+}
+dev.off()
+```
+
+
+# Histograms: JKI trial
+```{r histograms: JKI trial}
+rawdata_ct_woHK_jki <- as.data.frame(rawdata_ct_woHK[411:803,])
+rawdata_ct_woHK_jki$trial <- samplelist_jki$trial
+rawdata_ct_woHK_jki$treatment <- samplelist_jki$treatment
+rawdata_ct_woHK_jki$crossing <- samplelist_jki$crossing
+
+rawdata_ct_woHK_jki$id <- rownames(rawdata_ct_woHK_jki)
+rawdata_ct_woHK_jki_melt <- melt(rawdata_ct_woHK_jki)
+rawdata_ct_woHK_jki_melt <- rawdata_ct_woHK_jki_melt[order(rawdata_ct_woHK_jki_melt$variable),]
+
+# TREATMENT
+pdf("figures/valdis/rawdata_ct_woHK_jki_hist_treatment.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset_jki <- subset(rawdata_ct_woHK_jki_melt, 
+                          rawdata_ct_woHK_jki_melt$variable == levels(rawdata_ct_woHK_jki_melt$variable)[i])
+sub_dataset_jki <- droplevels(sub_dataset_jki)
+func_histograms_treatment(sub_dataset_jki)
+}
+dev.off()
+
+# CROSSING
+rawdata_ct_woHK_jki_melt_crossing <- subset(rawdata_ct_woHK_jki_melt, rawdata_ct_woHK_jki_melt$crossing %in% c("AxR", "ExA"))
+pdf("figures/valdis/rawdata_ct_woHK_jki_hist_crossing.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset_jki <- subset(rawdata_ct_woHK_jki_melt_crossing, 
+                          rawdata_ct_woHK_jki_melt_crossing$variable == levels(rawdata_ct_woHK_jki_melt_crossing$variable)[i])
+sub_dataset_jki <- droplevels(sub_dataset_jki)
+func_histograms_crossing(sub_dataset_jki) 
+}
+dev.off()
+```
+
+
+# Get HK genes per trial
+```{r HK genes per trial}
+mpi_index <- which(samplelist$trial=="MPI FGH 2014")
+jki_index <- which(samplelist$trial=="JKI Shelter 2014")
+
+# MPI
+hkg_mpi <- as.data.frame(rawdata_ct[mpi_index, HK_index])
+summary(hkg_mpi)
+# add columns
+hkg_mpi$treatment <- samplelist_mpi$treatment
+hkg_mpi$crossing <- samplelist_mpi$crossing2
+hkg_mpi$machine <- samplelist_mpi$machine
+hkg_mpi$sector <- samplelist_mpi$sector
+hkg_mpi$id <- rownames(hkg_mpi)
+# melt dataset
+hkg_mpi_melt <- melt(hkg_mpi)
+
+# JKI
+hkg_jki <- as.data.frame(rawdata_ct[jki_index, HK_index])
+summary(hkg_jki)
+# add columns
+hkg_jki$treatment <- samplelist_jki$treatment
+hkg_jki$crossing <- samplelist_jki$crossing
+hkg_jki$machine <- samplelist_jki$machine
+hkg_jki$sector <- samplelist_jki$sector
+hkg_jki$id <- rownames(hkg_jki)
+head(hkg_jki)
+# melt dataset
+hkg_jki_melt <- melt(hkg_jki)
+head(hkg_jki_melt)
+
+aggregate(hkg_mpi_melt$value, by=list(hkg_mpi_melt$machine, hkg_mpi_melt$variable), mean, na.rm=T)
+aggregate(hkg_jki_melt$value, by=list(hkg_jki_melt$machine, hkg_jki_melt$variable), mean, na.rm=T)
+
+# subset for Machines
+hkg_mpi_melt_M1 <- subset(hkg_mpi_melt, hkg_mpi_melt$machine=="M1")
+hkg_jki_melt_M1 <- subset(hkg_jki_melt, hkg_jki_melt$machine=="M1")
+hkg_mpi_melt_M2 <- subset(hkg_mpi_melt, hkg_mpi_melt$machine=="M2")
+hkg_jki_melt_M2 <- subset(hkg_jki_melt, hkg_jki_melt$machine=="M2")
+hkg_mpi_melt_M3 <- subset(hkg_mpi_melt, hkg_mpi_melt$machine=="M3")
+hkg_jki_melt_M3 <- subset(hkg_jki_melt, hkg_jki_melt$machine=="M3")
+hkg_mpi_melt_M4 <- subset(hkg_mpi_melt, hkg_mpi_melt$machine=="M4")
+hkg_jki_melt_M4 <- subset(hkg_jki_melt, hkg_jki_melt$machine=="M4")
+```
+
+
+## Plot HK genes per trial
+```{r plot HK genes per trial}
+pdf("figures/valdis/hkg_boxplots.pdf")
+par(mfrow=c(1,2))
+par(mar=c(15,4,4,2))
+
+# only MPI
+boxplot(rawdata_ct[1:410,c(15,22,36,42)], las=2, main="only MPI samples", ylim=c(19,30), ylab="Ct value")
+abline(h=25, col="grey", lwd=2, lty=2)
+# only JKI
+boxplot(rawdata_ct[411:803,c(15,22,36,42)], las=2, main="only JKI samples", ylim=c(19,30), ylab="Ct value")
+abline(h=25, col="grey", lwd=2, lty=2)
+
+# by treatment
+palette(cols_treatment)
+# only MPI
+boxplot(hkg_mpi_melt$value ~ hkg_mpi_melt$treatment * hkg_mpi_melt$variable, 
+        col=c(1,2), las=2, main="treatment: only MPI samples", ylab="Ct value", ylim=c(19,30))
+# only JKI
+boxplot(hkg_jki_melt$value ~ hkg_jki_melt$treatment * hkg_jki_melt$variable, 
+        col=c(1,2), las=2, main="treatment: only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("bottomleft", fill=1:2, levels(hkg_mpi_melt$treatment))
+
+par(mfrow=c(1,1))
+
+# by crossing
+palette(heike_palette_6)
+# only MPI
+boxplot(hkg_mpi_melt$value ~ hkg_mpi_melt$crossing * hkg_mpi_melt$variable, 
+        col=1:6, las=2, main="crossing: only MPI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:6, levels(hkg_mpi_melt$crossing), horiz = T, cex = 0.8)
+# only JKI
+boxplot(hkg_jki_melt$value ~ hkg_jki_melt$crossing * hkg_jki_melt$variable, 
+        col=1:6, las=2, main="crossing: only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:6, levels(hkg_jki_melt$crossing), horiz = T, cex = 0.8)
+
+
+# by machine
+# only MPI
+palette(heike_palette_4)
+boxplot(hkg_mpi_melt$value ~ hkg_mpi_melt$machine * hkg_mpi_melt$variable, 
+        col=1:4, las=2, main="machine: only MPI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:4, levels(hkg_mpi_melt$machine), horiz = T)
+# only JKI
+palette(heike_palette_5)
+boxplot(hkg_jki_melt$value ~ hkg_jki_melt$machine * hkg_jki_melt$variable, 
+        col=1:5, las=2, main="machine: only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:5, levels(hkg_jki_melt$machine), horiz = T)
+
+# by sector
+palette(rainbow(8))
+# M1
+# only MPI
+boxplot(hkg_mpi_melt_M1$value ~ hkg_mpi_melt_M1$sector * hkg_mpi_melt_M1$variable, 
+        col=1:8, las=2, main="sector (M1): only MPI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_mpi_melt_M1$sector), horiz = T, cex = 0.8)
+# only JKI
+boxplot(hkg_jki_melt_M1$value ~ hkg_jki_melt_M1$sector * hkg_jki_melt_M1$variable, 
+        col=1:8, las=2, main="sector (M1): only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_jki_melt_M1$sector), horiz = T, cex = 0.8)
+
+# M2
+# only MPI
+boxplot(hkg_mpi_melt_M2$value ~ hkg_mpi_melt_M2$sector * hkg_mpi_melt_M2$variable, 
+        col=1:8, las=2, main="sector (M2): only MPI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_mpi_melt_M2$sector), horiz = T, cex = 0.8)
+# only JKI
+boxplot(hkg_jki_melt_M2$value ~ hkg_jki_melt_M2$sector * hkg_jki_melt_M2$variable, 
+        col=1:8, las=2, main="sector (M2): only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_jki_melt_M2$sector), horiz = T, cex = 0.8)
+
+# M3
+# only MPI
+boxplot(hkg_mpi_melt_M3$value ~ hkg_mpi_melt_M3$sector * hkg_mpi_melt_M3$variable, 
+        col=1:8, las=2, main="sector (M3): only MPI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_mpi_melt_M3$sector), horiz = T, cex = 0.8)
+# only JKI
+boxplot(hkg_jki_melt_M3$value ~ hkg_jki_melt_M3$sector * hkg_jki_melt_M3$variable, 
+        col=1:8, las=2, main="sector (M3): only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_jki_melt_M3$sector), horiz = T, cex = 0.8)
+
+# M4
+# only MPI
+boxplot(hkg_mpi_melt_M4$value ~ hkg_mpi_melt_M4$sector * hkg_mpi_melt_M4$variable, 
+        col=1:8, las=2, main="sector (M4): only MPI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_mpi_melt_M4$sector), horiz = T, cex = 0.8)
+# only JKI
+boxplot(hkg_jki_melt_M4$value ~ hkg_jki_melt_M4$sector * hkg_jki_melt_M4$variable, 
+        col=1:8, las=2, main="sector (M4): only JKI samples", ylab="Ct value", ylim=c(19,30))
+legend("topright", fill=1:8, levels(hkg_jki_melt_M4$sector), horiz = T, cex = 0.8)
+
+dev.off()
+
+palette("default")
+par(mar=c(5,4,4,2))
+```
+
+
+# Calculate mean of 4 housekeeping genes per sample
+```{r calculate mean of 4 housekeeping genes per sample}
+# mean of 4 housekeeping genes per sample
+housekeeping_mean_all <- apply(rawdata_ct[,HK_index], 1, mean, na.rm=TRUE)
+
+# without HKG4 !
+# housekeeping_mean <- apply(rawdata_ct[,which(colnames(rawdata_ct) %in% c("PGSC0003DMT400068117", 
+#                                                                          "PGSC0003DMT400037585", 
+#                                                                          "PGSC0003DMT400080569"))], 
+#                            1, mean, na.rm=TRUE)
+# plot(housekeeping_mean_all, housekeeping_mean)
+```
+
+
+# Calculate delta Ct: ``CT_gene - mean(CT_HK)``
+```{r calculate delta Ct}
+delta_ct <- matrix(1, nrow=nrow(rawdata_ct_woHK), ncol=ncol(rawdata_ct_woHK))
+colnames(delta_ct) <- colnames(rawdata_ct_woHK)
+rownames(delta_ct) <- rownames(rawdata_ct_woHK)
+
+for (i in 1:nrow(rawdata_ct_woHK)){
+  for (j in 1:ncol(rawdata_ct_woHK)){
+    delta_ct[i,j] <- rawdata_ct_woHK[i,j]-housekeeping_mean_all[i]
+    }
+  }
+```
+
+
+# Calculate 2 to the power of minus delta Ct
+```{r calculate 2 to the power of minus delta Ct}
+two_minus_delta_ct <- 2^-(delta_ct)
+hist(two_minus_delta_ct, breaks=50, col="grey")
+# low values correpond to low expression in comparison to HK genes -> between 0 and 1
+# high values correpond to high expression in comparison to HK genes -> larger than 1
+
+# log transform normalized values (2 to the power of minus delta Ct)
+log_norm_ct <- log10(two_minus_delta_ct)
+hist(log_norm_ct, col="grey", breaks=50)
+# low values correpond to low expression in comparison to HK genes (e.g. CT 40)
+# high values correpond to high expression in comparison to HK genes (e.g. CT 20)
+
+dim(log_norm_ct)
+
+# remove column 9 due to high number of Ct = 40
+log_norm_ct_cleaned <- log_norm_ct[,-9]
+
+write.table(log_norm_ct, "output/valdis/log_norm_ct.txt", sep="\t")
+write.table(log_norm_ct_cleaned, "output/valdis/log_norm_ct_cleaned.txt", sep="\t")
+
+log2_norm_ct <- log2(two_minus_delta_ct)
+log2_norm_ct[1:5,1:5]
+two_minus_delta_ct[1:5,1:5]
+```
+
+
+# PCA
+```{r PCA}
+log_norm_ct_prep_none_rnipals <- func_prep_pca(log_norm_ct, 
+                                               scale_method = "none", 
+                                               center_option = FALSE, 
+                                               pc_number = 5, 
+                                               pca_method = "rnipals")
+
+log_norm_ct_prep_pareto_rnipals <- func_prep_pca(log_norm_ct, 
+                                               scale_method = "pareto", 
+                                               center_option = FALSE, 
+                                               pc_number = 5, 
+                                               pca_method = "rnipals")
+
+log_norm_ct_prep_none_ppca <- func_prep_pca(log_norm_ct, 
+                                               scale_method = "none", 
+                                               center_option = FALSE, 
+                                               pc_number = 5, 
+                                               pca_method = "ppca")
+
+# export completeObs for later use by RandomForest
+write.table(log_norm_ct_prep_none_rnipals@completeObs, 
+            "output/valdis/log_norm_ct_prep_none_rnipals_completeObs.txt", sep="\t")
+
+log_norm_ct_prep_pareto_rnipals@R2
+log_norm_ct_prep_none_rnipals@R2
+```
+
+
+# PCA plots
+```{r pca plots}
+pdf("figures/valdis/pca_log_norm_ct.pdf")
+
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_prep_none_rnipals, samplelist, 
+                 "treatment", 19, "treatment effect, no scaling")
+func_5pairs_plot(log_norm_ct_prep_pareto_rnipals, samplelist, 
+                 "treatment", 19, "treatment effect, pareto scaling")
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 1, 2, samplelist, 
+              "treatment", 19, 1, "bottomright", 1)
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 1, 3, samplelist, 
+              "treatment", 19, 1, "bottomright", 1)
+
+#pairs(log_norm_ct_prep_none_rnipals@scores[,1:3], col=samplelist$treatment, pch=19)
+#pairs(log_norm_ct_prep_pareto_rnipals@scores[,1:3], col=samplelist$treatment, pch=19)
+
+# experiment
+palette(cols_sample_time2)
+func_5pairs_plot(log_norm_ct_prep_none_rnipals, samplelist, "trial", 19, "experiment effect, no scaling")
+func_5pairs_plot(log_norm_ct_prep_pareto_rnipals, samplelist, "trial", 19, "experiment effect, pareto scaling")
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 1, 2, samplelist, "trial", 19, 1, "bottomright", 1)
+
+func_pca_plot_sym(log_norm_ct_prep_pareto_rnipals, 1, 2, samplelist, "trial", c(19,17), "treatment", 
+                  1, "bottomright", 1, "topright", 1, "trial/treatment (pareto scaling)", levels(samplelist$trial))
+
+# pairs(log_norm_ct_prep_pareto_rnipals@scores[,1:3], col=samplelist$trial, pch=19)
+# plot(log_norm_ct_prep_pareto_rnipals@scores[,1], log_norm_ct_prep_pareto_rnipals@scores[,2], col=samplelist$trial, pch=19)
+# legend("topright", fill=1:2, c("JKI Shelter 2014", "MPI FGH 2014"))
+
+# pairs(log_norm_ct_prep_pareto_rnipals@scores[,1:3], col=samplelist$trial, pch=c(19,17)[samplelist$treatment])
+# plot(log_norm_ct_prep_pareto_rnipals@scores[,1], log_norm_ct_prep_pareto_rnipals@scores[,2], 
+#      col=samplelist$trial, pch=c(19,17)[samplelist$treatment])
+# legend("topright", fill=1:2, c("JKI Shelter 2014", "MPI FGH 2014"))
+# legend("bottomright", pch=c(19,17), legend = levels(samplelist$treatment))
+
+# population
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_prep_pareto_rnipals, samplelist, "crossing2", 19, "population effect, pareto scaling")
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 1, 3, samplelist, "crossing2", 19, 1.5, "topleft", 0.8)
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 2, 3, samplelist, "crossing2", 19, 1.5, "topleft", 0.8)
+
+# pairs(log_norm_ct_prep_pareto_rnipals@scores[,1:5], col=samplelist$crossing, pch=19)
+
+dev.off()
+```
+
+
+## PCA: only MPI trial
+```{r PCA: only MPI trial}
+log_norm_ct_mpi <- subset(log_norm_ct, samplelist$trial=="MPI FGH 2014")
+
+log_norm_ct_mpi_prep_none_rnipals <- func_prep_pca(log_norm_ct_mpi, 
+                                                   scale_method = "none", 
+                                                   center_option = FALSE, 
+                                                   pc_number = 5, 
+                                                   pca_method = "rnipals")
+
+log_norm_ct_mpi_prep_pareto_rnipals <- func_prep_pca(log_norm_ct_mpi, 
+                                                   scale_method = "pareto", 
+                                                   center_option = FALSE, 
+                                                   pc_number = 5, 
+                                                   pca_method = "rnipals")
+  
+log_norm_ct_mpi_prep_none_ppca <- func_prep_pca(log_norm_ct_mpi, 
+                                                   scale_method = "none", 
+                                                   center_option = FALSE, 
+                                                   pc_number = 5, 
+                                                   pca_method = "ppca")
+
+
+# export completeObs for later use by RandomForest
+#write.table(log_norm_ct_prep_none_rnipals@completeObs, "../output/log_norm_ct_prep_none_rnipals_completeObs.txt", sep="\t")
+```
+
+
+## PCA plots: only MPI trial
+```{r PCA plots: only MPI trial}
+# figures
+pdf("figures/valdis/pca_log_norm_ct_mpi.pdf")
+
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_mpi_prep_none_rnipals, samplelist_mpi, "treatment", 19, "treatment effect, no scaling")
+func_5pairs_plot(log_norm_ct_mpi_prep_pareto_rnipals, samplelist_mpi, "treatment", 19, "treatment effect, pareto scaling")
+func_pca_plot(log_norm_ct_mpi_prep_pareto_rnipals, 1, 2, samplelist_mpi, "treatment", 19, 1, "bottomright", 1)
+func_pca_plot(log_norm_ct_mpi_prep_pareto_rnipals, 1, 3, samplelist_mpi, "treatment", 19, 1, "bottomright", 1)
+func_pca_plot(log_norm_ct_mpi_prep_pareto_rnipals, 2, 3, samplelist_mpi, "treatment", 19, 1, "bottomright", 1)
+
+# population
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_mpi_prep_pareto_rnipals, samplelist_mpi, "crossing2", 19, "population effect, pareto scaling")
+func_pca_plot(log_norm_ct_mpi_prep_pareto_rnipals, 1, 2, samplelist_mpi, "crossing2", 19, 1.5, "topleft", 0.8)
+func_pca_plot(log_norm_ct_mpi_prep_pareto_rnipals, 1, 3, samplelist_mpi, "crossing2", 19, 1.5, "topleft", 0.8)
+func_pca_plot(log_norm_ct_mpi_prep_pareto_rnipals, 2, 3, samplelist_mpi, "crossing2", 19, 1.5, "topleft", 0.8)
+
+# population/treatment
+func_pca_plot_sym(log_norm_ct_mpi_prep_pareto_rnipals, 1, 2, samplelist_mpi, "crossing2", c(19,17), 
+              "treatment", 1.5, "bottomright", 0.8, "topright", 0.8, "population/treatment effect")
+
+dev.off()
+```
+
+
+## PCA: only JKI trial
+```{r pca: only JKI trial}
+log_norm_ct_jki <- subset(log_norm_ct, samplelist$trial=="JKI Shelter 2014")
+
+log_norm_ct_jki_prep_none_rnipals <- func_prep_pca(log_norm_ct_jki, 
+                                                   scale_method = "none", 
+                                                   center_option = FALSE, 
+                                                   pc_number = 5, 
+                                                   pca_method = "rnipals")
+
+log_norm_ct_jki_prep_pareto_rnipals <- func_prep_pca(log_norm_ct_jki, 
+                                                   scale_method = "pareto", 
+                                                   center_option = FALSE, 
+                                                   pc_number = 5, 
+                                                   pca_method = "rnipals")
+  
+log_norm_ct_jki_prep_none_ppca <- func_prep_pca(log_norm_ct_jki, 
+                                                   scale_method = "none", 
+                                                   center_option = FALSE, 
+                                                   pc_number = 5, 
+                                                   pca_method = "ppca")
+```
+
+
+## PCA plots: only JKI trial
+```{r PCA plots: only JKI trial}
+# figures
+pdf("figures/valdis/pca_log_norm_ct_jki.pdf")
+
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_jki_prep_none_rnipals, samplelist_jki, "treatment", 19, "treatment effect, no scaling")
+func_5pairs_plot(log_norm_ct_jki_prep_pareto_rnipals, samplelist_jki, "treatment", 19, "treatment effect, pareto scaling")
+func_pca_plot(log_norm_ct_jki_prep_pareto_rnipals, 1, 2, samplelist_jki, "treatment", 19, 1, "bottomright", 1)
+func_pca_plot(log_norm_ct_jki_prep_pareto_rnipals, 1, 3, samplelist_jki, "treatment", 19, 1, "bottomright", 1)
+func_pca_plot(log_norm_ct_jki_prep_pareto_rnipals, 2, 3, samplelist_jki, "treatment", 19, 1, "bottomright", 1)
+
+# population
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_jki_prep_pareto_rnipals, samplelist_jki, "crossing2", 19, "population effect, pareto scaling")
+func_pca_plot(log_norm_ct_jki_prep_pareto_rnipals, 1, 2, samplelist_jki, "crossing2", 19, 1.5, "topleft", 0.8)
+func_pca_plot(log_norm_ct_jki_prep_pareto_rnipals, 1, 3, samplelist_jki, "crossing2", 19, 1.5, "topleft", 0.8)
+func_pca_plot(log_norm_ct_jki_prep_pareto_rnipals, 2, 3, samplelist_jki, "crossing2", 19, 1.5, "topleft", 0.8)
+
+# population/treatment
+func_pca_plot_sym(log_norm_ct_jki_prep_pareto_rnipals, 1, 2, samplelist_jki, "crossing2", c(19,17), 
+              "treatment", 1.5, "bottomright", 0.8, "topright", 0.8, "population/treatment effect")
+
+dev.off()
+```
+
+
+## PCA plots for REPORT
+```{r PCA plots for REPORT}
+
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 1, 2, samplelist, "treatment", 19, 1, "bottomright", 1)
+func_pca_plot(log_norm_ct_prep_pareto_rnipals, 2, 3, samplelist, "treatment", 19, 1, "bottomright", 1)
+
+# WITHOUT DESIREE
+samplelist_without_desiree <- subset(samplelist, samplelist$crossing != "Desiree")
+pca_scores_without_desiree <- subset(log_norm_ct_prep_pareto_rnipals@scores, samplelist$crossing != "Desiree")
+log_norm_ct_prep_pareto_rnipals@R2
+
+
+pdf("figures/valdis/PCA_scoresplots_report.pdf", width=8, height=6)
+
+theme_new <- theme_set(theme_bw())
+theme_new <- theme_update(
+  axis.title.x = element_text(face="bold", size=16),
+  axis.title.y = element_text(face="bold", size=16, angle=90),
+  axis.text.x = element_text(size=12),
+  axis.text.y = element_text(size=12),
+  legend.title = element_text(face="bold", size=14),
+  legend.text = element_text(size=12),
+  plot.title = element_text(face="bold", size=16))
+
+# TREATMENT
+p <- qplot(log_norm_ct_prep_pareto_rnipals@scores[,1], log_norm_ct_prep_pareto_rnipals@scores[,2], 
+           colour = samplelist$treatment, 
+           xlab = "PC1 (20.6%)", ylab = "PC2 (11.3%)", 
+           size = I(3)) 
+
+p + scale_colour_manual(values = cols_treatment_report, name="Behandlung",
+                        labels = c("Kontrolle","Stress"))
+
+
+p <- qplot(log_norm_ct_prep_pareto_rnipals@scores[,2], log_norm_ct_prep_pareto_rnipals@scores[,3], 
+           colour = samplelist$treatment, 
+           xlab = "PC2 (11.3%)", ylab = "PC3 (7.1%)", 
+           size = I(3)) 
+
+p + scale_colour_manual(values = cols_treatment_report, name="Behandlung",
+                        labels = c("Kontrolle","Stress"))
+
+# GENOTYPE
+q <- qplot(pca_scores_without_desiree[,2], pca_scores_without_desiree[,3], 
+           colour = samplelist_without_desiree$crossing2, 
+           xlab = "PC2 (11.3%)", ylab = "PC3 (7.1%)", 
+           shape = samplelist_without_desiree$crossing,
+           size = I(3)) 
+
+q + scale_colour_manual(values = cols_genotype_report, name="Genotyp",
+                        labels = c("Albatros","AxR","Euroresa","ExA","Ramses")) + guides(shape=FALSE)
+
+# EXPERIMENT
+p <- qplot(log_norm_ct_prep_pareto_rnipals@scores[,1], log_norm_ct_prep_pareto_rnipals@scores[,2], 
+           colour = samplelist$trial, 
+           xlab = "PC1 (20.6%)", ylab = "PC2 (11.3%)", 
+           size = I(3)) 
+
+p + scale_colour_manual(values = c("darkslateblue", "deeppink4"), name="Experiment",
+                        labels = c("JKI Shelter 2015","MPI FGH 2015"))
+
+dev.off()
+```
+
+
+### PCA plots for REPORT MPI
+```{r PCA plots for REPORT MPI}
+# WITHOUT DESIREE
+mpi_samplelist_without_desiree <- subset(samplelist_mpi, samplelist_mpi$crossing != "Desiree")
+mpi_pca_scores_without_desiree <- subset(log_norm_ct_mpi_prep_pareto_rnipals@scores, samplelist_mpi$crossing != "Desiree")
+
+log_norm_ct_mpi_prep_pareto_rnipals@R2
+
+
+
+pdf("figures/valdis/PCA_scoresplots_report_mpi.pdf", width=8, height=6)
+
+theme_new <- theme_set(theme_bw())
+theme_new <- theme_update(
+  axis.title.x = element_text(face="bold", size=16),
+  axis.title.y = element_text(face="bold", size=16, angle=90),
+  axis.text.x = element_text(size=12),
+  axis.text.y = element_text(size=12),
+  legend.title = element_text(face="bold", size=14),
+  legend.text = element_text(size=12),
+  plot.title = element_text(face="bold", size=16))
+
+# TREATMENT
+p <- qplot(mpi_pca_scores_without_desiree[,1], mpi_pca_scores_without_desiree[,2], 
+           colour = mpi_samplelist_without_desiree$treatment, 
+           xlab = "PC1 (9.8%)", ylab = "PC2 (7.4%)", 
+           size = I(3)) 
+
+p + scale_colour_manual(values = cols_treatment_report, name="Behandlung",
+                        labels = c("Kontrolle","Stress"))
+
+
+# GENOTYPE
+q <- qplot(mpi_pca_scores_without_desiree[,2], mpi_pca_scores_without_desiree[,3], 
+           colour = mpi_samplelist_without_desiree$crossing2, 
+           xlab = "PC2 (7.4%)", ylab = "PC3 (6.9%)", 
+           shape = mpi_samplelist_without_desiree$crossing,
+           size = I(3)) 
+
+q + scale_colour_manual(values = cols_genotype_report, name="Genotyp",
+                        labels = c("Albatros","AxR","Euroresa","ExA","Ramses")) + guides(shape=FALSE)
+
+dev.off()
+```
+
+
+### PCA plots for REPORT JKI
+```{r PCA plots for REPORT JKI}
+# WITHOUT DESIREE
+jki_samplelist_without_desiree <- subset(samplelist_jki, samplelist_jki$crossing != "Desiree")
+jki_pca_scores_without_desiree <- subset(log_norm_ct_jki_prep_pareto_rnipals@scores, samplelist_jki$crossing != "Desiree")
+
+log_norm_ct_jki_prep_pareto_rnipals@R2
+
+
+
+pdf("figures/valdis/PCA_scoresplots_report_jki.pdf", width=8, height=6)
+
+theme_new <- theme_set(theme_bw())
+theme_new <- theme_update(
+  axis.title.x = element_text(face="bold", size=16),
+  axis.title.y = element_text(face="bold", size=16, angle=90),
+  axis.text.x = element_text(size=12),
+  axis.text.y = element_text(size=12),
+  legend.title = element_text(face="bold", size=14),
+  legend.text = element_text(size=12),
+  plot.title = element_text(face="bold", size=16))
+
+# TREATMENT
+p <- qplot(jki_pca_scores_without_desiree[,1], jki_pca_scores_without_desiree[,2], 
+           colour = jki_samplelist_without_desiree$treatment, 
+           xlab = "PC1 (28.8%)", ylab = "PC2 (9.3%)", 
+           size = I(3)) 
+
+p + scale_colour_manual(values = cols_treatment_report, name="Behandlung",
+                        labels = c("Kontrolle","Stress"))
+
+
+# GENOTYPE
+q <- qplot(jki_pca_scores_without_desiree[,2], jki_pca_scores_without_desiree[,3], 
+           colour = jki_samplelist_without_desiree$crossing2, 
+           xlab = "PC2 (9.3%)", ylab = "PC3 (5.6%)", 
+           shape = jki_samplelist_without_desiree$crossing,
+           size = I(3)) 
+
+q + scale_colour_manual(values = cols_genotype_report, name="Genotyp",
+                        labels = c("Albatros","AxR","Euroresa","ExA","Ramses")) + guides(shape=FALSE)
+
+dev.off()
+```
+
+
+# Boxplots
+## Boxplots per gene MPI
+```{r boxplots per gene MPI}
+log_norm_ct_mpi_2 <- as.data.frame(log_norm_ct_mpi)
+log_norm_ct_mpi_2$treatment <- samplelist_mpi$treatment
+log_norm_ct_mpi_2$crossing <- samplelist_mpi$crossing2
+log_norm_ct_mpi_2$id <- rownames(log_norm_ct_mpi_2)
+
+log_norm_ct_mpi_melt <- melt(log_norm_ct_mpi_2)
+log_norm_ct_mpi_melt <- log_norm_ct_mpi_melt[order(log_norm_ct_mpi_melt$variable),]
+
+# TREATMENT
+pdf("figures/valdis/boxplot_log_norm_ct_mpi_treatment.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset_mpi <- subset(log_norm_ct_mpi_melt, 
+                          log_norm_ct_mpi_melt$variable == levels(log_norm_ct_mpi_melt$variable)[i])
+sub_dataset_mpi <- droplevels(sub_dataset_mpi)
+boxplot(sub_dataset_mpi$value ~ sub_dataset_mpi$treatment)
+}
+dev.off()
+```
+
+
+## Boxplots per gene JKI
+```{r boxplots per gene JKI}
+log_norm_ct_jki_2 <- as.data.frame(log_norm_ct_jki)
+log_norm_ct_jki_2$treatment <- samplelist_jki$treatment
+log_norm_ct_jki_2$crossing <- samplelist_jki$crossing2
+log_norm_ct_jki_2$id <- rownames(log_norm_ct_jki_2)
+
+log_norm_ct_jki_melt <- melt(log_norm_ct_jki_2)
+log_norm_ct_jki_melt <- log_norm_ct_jki_melt[order(log_norm_ct_jki_melt$variable),]
+
+# TREATMENT
+pdf("figures/valdis/boxplot_log_norm_ct_jki_treatment.pdf", width=6, height=6)
+for(i in 1:43) {
+sub_dataset_jki <- subset(log_norm_ct_jki_melt, 
+                          log_norm_ct_jki_melt$variable == levels(log_norm_ct_jki_melt$variable)[i])
+sub_dataset_jki <- droplevels(sub_dataset_jki)
+boxplot(sub_dataset_jki$value ~ sub_dataset_jki$treatment)
+}
+dev.off()
+```
+
+
+# Save workspace
+```{r save workspace}
+save.image("qpcr_data_valdis.RData")
+sessionInfo()
+```
+

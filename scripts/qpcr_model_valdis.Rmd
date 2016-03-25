@@ -1,0 +1,207 @@
+Analysis of qPCR data from VALDIS experiments
+========================================================
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_data_valdis.RData")
+```
+
+
+# Source R functions
+```{r source R functions}
+source("../functions/colors.R")
+source("../functions/func_prep_pca.R")
+source("../functions/func_pca_plots.R")
+```
+
+
+# Load sample information
+```{r load sample information}
+# TROST samplelist
+samplelist_trost <- read.table("output/samplelist.txt", header=TRUE, sep="\t")
+
+samplelist_trost_part <- samplelist_trost[, c("cultivation", "trial", 
+                                              "sampleID", "aliquotID", "cultivar", 
+                                              "subspecies_id", "treatment")]
+
+levels(samplelist_trost_part$treatment) <- c("control", "drought stress")
+
+
+# VALDIS samplelist
+samplelist_valdis <- read.table("output/valdis/samplelist.txt", header=TRUE, sep="\t")
+
+samplelist_valdis_part <- samplelist_valdis[, c("cultivation", "trial", 
+                                                "sampleID", "aliquotID", "crossing", 
+                                                "line_id", "treatment")]
+
+colnames(samplelist_valdis_part)[5:6] <- c("cultivar", "subspecies_id")
+
+
+# combine both samplelists
+samplelist_all <- rbind(samplelist_trost_part, samplelist_valdis_part)
+dim(samplelist_all)
+# 1159 7
+
+# add column for trost or valdis
+samplelist_all$trost_valdis <- as.factor( c(rep("trost", 356), rep("valdis", 803)))
+
+# save common samplelist for trost and valdis
+write.table(samplelist_all, "output/valdis/samplelist_all.txt", sep="\t")
+```
+
+
+# Load data
+```{r load data}
+# TROST data
+log_norm_ct_trost <- read.table("output/log_norm_ct.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_trost)
+# 356 88
+
+# VALDIS data
+log_norm_ct_cleaned_valdis <- read.table("output/valdis/log_norm_ct_cleaned.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_cleaned_valdis)
+# 803 42
+```
+
+
+## Subset of 42 valdis genes
+```{r subset of 42 valdis genes}
+# save colnames in variable
+log_norm_ct_cleaned_valdis_colnames <- colnames(log_norm_ct_cleaned_valdis)
+# DMT
+
+# order dataframe by colnames and save colnames in variable
+log_norm_ct_trost_ordered <- log_norm_ct_trost[, order(colnames(log_norm_ct_trost))]
+log_norm_ct_trost_colnames <- colnames(log_norm_ct_trost_ordered)
+# DMT
+
+# index of 42 genes used for trost AND valdis
+overlapping_genes_idx <- which(log_norm_ct_trost_colnames %in% log_norm_ct_cleaned_valdis_colnames)
+log_norm_ct_subset_trost <- log_norm_ct_trost_ordered[, overlapping_genes_idx]
+write.table(log_norm_ct_subset_trost, "output/log_norm_ct_subset_trost.txt", sep="\t")
+
+
+dim(log_norm_ct_subset_trost)
+# 356 42
+dim(log_norm_ct_cleaned_valdis)
+# 803 42
+
+# combine both datasets
+log_norm_ct_all <- rbind(log_norm_ct_subset_trost, log_norm_ct_cleaned_valdis)
+dim(log_norm_ct_all)
+# 1159 42
+
+# save common dataset for trost and valdis
+write.table(log_norm_ct_all, "output/log_norm_ct_all.txt", sep="\t")
+```
+
+
+# PCA
+```{r pca}
+
+log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct_all, scale_method = "pareto", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_none_rnipals <- func_prep_pca(log_norm_ct_all, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct_all, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "ppca")
+
+
+# export completeObs for later use by RandomForest
+write.table(log_norm_ct_none_rnipals@completeObs, "output/log_norm_ct_prep_none_rnipals_completeObs_valdis.txt", sep="\t")
+dim(log_norm_ct_none_rnipals@completeObs)
+# 1159 samples, 42 genes
+```
+
+
+## PCA plots
+```{r pca plots}
+pdf("figures/pca_log_norm_ct_valdis_and_trost.pdf", width=10, height=10)
+
+# no scaling, rnipals
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "treatment", 19, "treatment effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "treatment", 19, 1, 
+              "bottomright", 0.8, maintext="treatment effect")
+
+
+# trost/valdis samples
+palette(cols_sample_time2)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "trost_valdis", 19, "trost/valdis effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "trost_valdis", 19, 1, 
+              "bottomright", 0.8, maintext="trost/valdis effect")
+
+
+# cultivation
+palette(heike_palette_4)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "cultivation", 19, "cultivation effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "cultivation", 19, 1, 
+              "bottomright", 0.8, maintext="cultivation effect")
+
+# trial
+# palette(cols_trial_ordered)
+palette(heike_palette_7)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "trial", 19, "trial effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "trial", 19, 1, 
+              "bottomright", 0.8, maintext="trial effect")
+
+# plot(log_norm_ct_prep_none_rnipals@scores[,1], log_norm_ct_prep_none_rnipals@scores[,2], col=samplelist_all$trial, pch=19)
+# legend("topleft", fill=1:7, c("JKI field 2012", "MPI field 2011", "MPI field 2012", "MPI-MP GH3", "MPI-MP GH5", "JKI Shelter 2014", "MPI-MP FGH 2014"))
+
+# genotype
+palette(rainbow(36))
+
+# 36 distinct colors from: 
+# http://withr.me/blog/2014/06/16/generate-distict-colors/
+palette(c("#77FAD9FF", "#FFC7FFFF", "#A8FD8EFF", "#CF800EFF", "#44E3EEFF", "#7F48EFFF", "#3BEB3CFF", "#9A98FDFF", "#FDA292FF", "#EF46D2FF", "#105FD0FF", "#4BC202FF", "#FAB174FF", "#C0C0C0FF", "#6BBBF8FF", "#B002C0FF", "#A8EF43FF", "#D9FFE4FF", "#05A3C4FF", "#E6D230FF", "#EC693DFF", "#24DFAEFF", "#FBF77BFF", "#C35103FF", "#7003C1FF", "#DC1F31FF", "#C21E03FF", "#1502C1FF", "#FFEEBAFF", "#4461EEFF", "#F8D86AFF", "#C48E03FF", "#44EE89FF", "#C0C0C0FF", "#D87DFBFF", "#A2C302FF"))
+
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "cultivar", 19, "genotype effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "cultivar", 19, 1, 
+              "bottomright", 0.5, maintext="genotype effect")
+func_pca_plot(log_norm_ct_none_rnipals, 2, 3, samplelist_all, "cultivar", 19, 1, 
+              "bottomright", 0.5, maintext="genotype effect")
+
+plot(log_norm_ct_none_rnipals@scores[,2], log_norm_ct_none_rnipals@scores[,3], col=samplelist_all$cultivar, 
+     pch=c(19,17)[samplelist_all$trost_valdis], cex=0.8, main="genotype effect (symbols: trost/valdis effect)")
+text(log_norm_ct_none_rnipals@scores[,2], log_norm_ct_none_rnipals@scores[,3], labels=samplelist_all$cultivar, cex=0.4)
+
+dev.off()
+```
+
+
+
+```{r save workspace}
+save.image("qpcr_data_valdis.RData")
+```
+
+
+
+
