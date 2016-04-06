@@ -1,13 +1,36 @@
-Prediction Model using qPCR data (field)
-========================================================
+---
+title: "Prediction Model using qPCR data (TROST field)"
+author: "Heike Sprenger"
+date: "Thursday, March 24, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 4
+---
 
-```{r setup}
-setwd("TROST/Sequencing/qpcr_data/scripts/")
-load("qpcr_model_field.RData")
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
 ```
 
-### Load packages
-```{r load packages}
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
 library(plyr)
 library(rpart)
 library(randomForest)
@@ -17,23 +40,41 @@ library(caret)
 library(pls)
 library(BioMark)
 library(varSelRF)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_model_field.RData")
 ```
 
 
+# Load Data
 ```{r load data}
-tolerance <- read.table("../../../Prediction_Model/output/tolerance_phenotyper_metadata_2sub.txt", sep="\t", header=TRUE)
-levels(tolerance$tol_cat2_fve) <- c("low", "high")
-levels(tolerance$tol_cat3_fve) <- c("low", "mid", "high")
+tolerance <- read.table("../trost_phenotypes/output/tolerance_phenotyper_metadata_2sub.txt", 
+                        sep = "\t", header = TRUE)
 
-samplelist <- read.table("../output/samplelist.txt", header=TRUE, sep="\t")
-log_norm_ct <- read.table("../output/log_norm_ct.txt", header=TRUE, sep="\t")
+# relevel tolerance factors
+tolerance$tol_cat2_fve <- factor(tolerance$tol_cat2_fve, levels = c("low", "high"))
+tolerance$tol_cat3_fve <- factor(tolerance$tol_cat3_fve, levels = c("low","mid", "high"))
+
+
+samplelist <- read.table("output/trost/samplelist.txt", header=TRUE, sep="\t")
+log_norm_ct <- read.table("output/trost/log_norm_ct.txt", header=TRUE, sep="\t")
+
+dim(log_norm_ct)
 
 # percentage of NAs
-sum(is.na(log_norm_ct))/(356*88)*100
+sum(is.na(log_norm_ct)) / (nrow(log_norm_ct)*ncol(log_norm_ct)) *100
 # 0.56%
 ```
 
-### Define training data
+
+## Define training data
 ```{r define training data}
 # join metadata
 head(tolerance)
@@ -41,49 +82,51 @@ head(samplelist)
 levels(samplelist$treatment) <- c("control", "drought stress")
 
 # join samplelist
-samplelist_joined <- join(samplelist, tolerance, by="subspecies_id")
-samplelist_field <- subset(samplelist_joined, samplelist_joined$cultivation=="field")
+samplelist_joined <- join(samplelist, tolerance, by = "subspecies_id")
+samplelist_field <- droplevels(subset(samplelist_joined, samplelist_joined$cultivation == "field"))
 
 # only field data
 log_norm_ct_field <- subset(log_norm_ct, samplelist$cultivation=="field")
 
 # train/test data
-train_data <- subset(log_norm_ct_field, samplelist_field$model_set=="train")
-test_data <- subset(log_norm_ct_field, samplelist_field$model_set=="test")
+train_data <- droplevels(subset(log_norm_ct_field, samplelist_field$model_set=="train"))
+test_data <- droplevels(subset(log_norm_ct_field, samplelist_field$model_set=="test"))
 
 # train/test info
-train_info <- subset(samplelist_field, samplelist_field$model_set=="train")
-test_info <- subset(samplelist_field, samplelist_field$model_set=="test")
+train_info <- droplevels(subset(samplelist_field, samplelist_field$model_set=="train"))
+test_info <- droplevels(subset(samplelist_field, samplelist_field$model_set=="test"))
 ```
 
 
-### Define control data (and meta data)
+## Define control data (and meta data)
 ```{r define control data}
 # data
-train_data_control <- subset(train_data, train_info$treatment=="control")
-test_data_control <- subset(test_data, test_info$treatment=="control")
+train_data_control <- droplevels(subset(train_data, train_info$treatment=="control"))
+test_data_control <- droplevels(subset(test_data, test_info$treatment=="control"))
 
 # meta data
-train_info_control <- subset(train_info, train_info$treatment=="control")
-test_info_control <- subset(test_info, test_info$treatment=="control")
+train_info_control <- droplevels(subset(train_info, train_info$treatment=="control"))
+test_info_control <- droplevels(subset(test_info, test_info$treatment=="control"))
 ```
 
 
-# Define all data (without 3 cultivars --> model_set=="NA") and subset of all control samples
+## Define all data (without 3 cultivars --> model_set=="NA") and subset of all control samples
 ```{r define all data (control)}
-all_data <- subset(log_norm_ct_field, !samplelist_field$model_set=="NA")
-all_info <- subset (samplelist_field, !samplelist_field$model_set=="NA")
+all_data <- droplevels(subset(log_norm_ct_field, !samplelist_field$model_set=="NA"))
+all_info <- droplevels(subset (samplelist_field, !samplelist_field$model_set=="NA"))
 
 # all control samples (ohne NA -> 3 Kutlivare)
-all_data_control <- subset(log_norm_ct_field, samplelist_field$treatment=="control" & !samplelist_field$model_set=="NA")
-all_info_control <- subset (samplelist_field, samplelist_field$treatment=="control" & !samplelist_field$model_set=="NA")
+all_data_control <- droplevels(subset(log_norm_ct_field, samplelist_field$treatment=="control" & !samplelist_field$model_set=="NA"))
+all_info_control <- droplevels(subset (samplelist_field, samplelist_field$treatment=="control" & !samplelist_field$model_set=="NA"))
 ```
 
 
-### data without NAs from PCA (rnipals, no scaling)
+# Load data without NAs from PCA (rnipals, no scaling)
 ```{r data without NAs}
-log_norm_ct_woNA <- read.table("../output/log_norm_ct_prep_none_rnipals_completeObs.txt", header=TRUE, sep="\t")
+log_norm_ct_woNA <- read.table("output/trost/log_norm_ct_none_rnipals_completeObs.txt", header=TRUE, sep="\t")
 dim(log_norm_ct_woNA)
+
+# only field data
 log_norm_ct_field_woNA <- subset(log_norm_ct_woNA, samplelist$cultivation=="field")
 dim(log_norm_ct_field_woNA)
 
@@ -103,10 +146,11 @@ all_data_control_woNA <- subset(log_norm_ct_field_woNA, samplelist_field$treatme
 ```
 
 
-### regression tree: rpart package, train data
+# Regression tree: rpart package
+## Regression tree: train data
 ```{r rpart reg train}
 class(train_data)
-input_train <- cbind(train_data, "tol"=train_info$mdrym_fve)
+input_train <- data.frame(train_data, "tol" = train_info$mdrym_fve)
 class(input_train)
 
 tree_train <- rpart(tol~., data=input_train)
@@ -123,7 +167,7 @@ text(tree_train_pruned)
 # as party 
 plot(as.party(tree_train_pruned))
 
-pdf("../figures/field_tree_train_pruned.pdf", width=13, height=8)
+pdf("figures/model/field_tree_train_pruned.pdf", width=13, height=8)
 plot(as.party(prune(tree_train, cp=0.16))) # 1 node
 plot(as.party(prune(tree_train, cp=0.13))) # 2 nodes
 plot(as.party(prune(tree_train, cp=0.12))) # 3 nodes
@@ -143,10 +187,10 @@ sqrt(mean((test_info$mdrym_fve - predict(tree_train, as.data.frame(test_data), t
 ```
 
 
-### regression tree: rpart package, only control field train data
+## Regression tree: only control field train data
 ```{r rpart reg train control}
 class(train_data_control)
-input_train_control <- as.data.frame( cbind(train_data_control, "tol"=train_info_control$mdrym_fve))
+input_train_control <- data.frame(train_data_control, "tol"=train_info_control$mdrym_fve)
 class(input_train_control)
 
 tree_train_control <- rpart(tol~., data=input_train_control)
@@ -163,7 +207,7 @@ text(tree_train_control_pruned)
 # as party 
 plot(as.party(tree_train_control_pruned))
 
-pdf("../figures/field_tree_train_control_pruned.pdf", width=13, height=8)
+pdf("figures/model/field_tree_train_control_pruned.pdf", width=13, height=8)
 plot(as.party(prune(tree_train_control, cp=0.25))) # 1 node
 plot(as.party(prune(tree_train_control, cp=0.15))) # 2 nodes
 plot(as.party(prune(tree_train_control, cp=0.10))) # 3 nodes
@@ -179,9 +223,9 @@ sqrt(mean((test_info_control$mdrym_fve - predict(tree_train_control, as.data.fra
 ```
 
 
-### regression tree: rpart package, all data
+## Regression tree: all data
 ```{r rpart reg all}
-input_all <- cbind(all_data, "tol"=all_info$mdrym_fve)
+input_all <- data.frame(all_data, "tol"=all_info$mdrym_fve)
 sum(is.na(all_data))
 # 76
 dim(all_data)
@@ -200,7 +244,7 @@ text(tree_all_pruned)
 # as party 
 plot(as.party(tree_all_pruned))
 
-pdf("../figures/field_tree_all_pruned.pdf", width=13, height=8)
+pdf("figures/model/field_tree_all_pruned.pdf", width=13, height=8)
 plot(as.party(prune(tree_all, cp=0.16))) # 1 node
 plot(as.party(prune(tree_all, cp=0.13))) # 2 nodes
 plot(as.party(prune(tree_all, cp=0.10))) # 3 nodes
@@ -223,9 +267,9 @@ sqrt(mean((all_info$mdrym_fve - predict(tree_all, as.data.frame(all_data), type=
 ```
 
 
-### regression tree: rpart package, all data control
+## Regression tree: all data control
 ```{r rpart reg all control}
-input_all_control <- cbind(all_data_control, "tol"=all_info_control$mdrym_fve)
+input_all_control <- data.frame(all_data_control, "tol"=all_info_control$mdrym_fve)
 
 tree_all_control <- rpart(tol~., data=input_all_control)
 printcp(tree_all_control)
@@ -241,8 +285,8 @@ text(tree_all_control_pruned)
 # as party 
 plot(as.party(tree_all_control_pruned))
 
-pdf("../figures/field_tree_all_control_pruned.pdf", width=13, height=8)
-plot(as.party(prune(tree_all_control, cp=0.21))) # 1 node
+pdf("figures/model/field_tree_all_control_pruned.pdf", width=13, height=8)
+#plot(as.party(prune(tree_all_control, cp=0.21))) # 1 node
 plot(as.party(prune(tree_all_control, cp=0.15))) # 2 nodes
 plot(as.party(prune(tree_all_control, cp=0.10))) # 3 nodes
 plot(as.party(prune(tree_all_control, cp=0.06))) # 4 nodes
@@ -262,10 +306,10 @@ sqrt(mean((all_info_control$mdrym_fve - predict(tree_all_control, as.data.frame(
 ```
 
 
-### classification tree: rpart package, train data, 2 tolerance classes
+# Classification tree: rpart package
+## Classification tree: train data, 2 tolerance classes
 ```{r rpart cat2 train}
-input_cat2_train <- as.data.frame( cbind(train_data, "tol"=train_info$tol_cat2_fve))
-input_cat2_train$tol <- train_info$tol_cat2_fve
+input_cat2_train <- data.frame(train_data, "tol"=train_info$tol_cat2_fve)
 
 tree_cat2_train <- rpart(tol~., data=input_cat2_train)
 printcp(tree_cat2_train)
@@ -281,7 +325,7 @@ text(tree_cat2_train_pruned)
 # as party 
 plot(as.party(tree_cat2_train_pruned))
 
-pdf("../figures/field_tree_cat2_train_pruned.pdf", width=13, height=8)
+pdf("figures/model/field_tree_cat2_train_pruned.pdf", width=13, height=8)
 plot(as.party(prune(tree_cat2_train, cp=0.2))) # 1 node
 plot(as.party(prune(tree_cat2_train, cp=0.09))) # 2 nodes
 plot(as.party(prune(tree_cat2_train, cp=0.05))) # 3 nodes
@@ -295,10 +339,9 @@ table(test_info$tol_cat2_fve, predict(tree_cat2_train, as.data.frame(test_data),
 ```
 
 
-### classification tree: rpart package, train data, 3 tolerance classes
+## Classification tree: train data, 3 tolerance classes
 ```{r rpart cat3 train}
-input_cat3_train <- as.data.frame( cbind(train_data, "tol"=train_info$tol_cat3_fve))
-input_cat3_train$tol <- train_info$tol_cat3_fve
+input_cat3_train <- data.frame(train_data, "tol"=train_info$tol_cat3_fve)
 levels(input_cat3_train$tol)
 
 tree_cat3_train <- rpart(tol~., data=input_cat3_train)
@@ -315,7 +358,7 @@ text(tree_cat3_train_pruned)
 # as party 
 plot(as.party(tree_cat3_train_pruned))
 
-pdf("../figures/field_tree_cat3_train_pruned.pdf", width=13, height=8)
+pdf("figures/model/field_tree_cat3_train_pruned.pdf", width=13, height=8)
 plot(as.party(prune(tree_cat3_train, cp=0.20))) # 1 node
 plot(as.party(prune(tree_cat3_train, cp=0.10))) # 2 nodes
 plot(as.party(prune(tree_cat3_train, cp=0.08))) # 3 nodes
@@ -329,10 +372,9 @@ table(test_info$tol_cat3_fve, predict(tree_cat3_train, as.data.frame(test_data),
 ```
 
 
-### classification tree: rpart package, all data, 3 tolerance classes
+## Classification tree: all data, 3 tolerance classes
 ```{r rpart cat3 all}
-input_cat3_all <- as.data.frame( cbind(all_data, "tol"=all_info$tol_cat3_fve))
-input_cat3_all$tol <- all_info$tol_cat3_fve
+input_cat3_all <- data.frame(all_data, "tol"=all_info$tol_cat3_fve)
 levels(input_cat3_all$tol)
 
 tree_cat3_all <- rpart(tol~., data=input_cat3_all)
@@ -350,7 +392,7 @@ text(tree_cat3_all_pruned)
 # as party 
 plot(as.party(tree_cat3_all_pruned))
 
-pdf("../figures/field_tree_cat3_all_pruned.pdf", width=13, height=8)
+pdf("figures/model/field_tree_cat3_all_pruned.pdf", width=13, height=8)
 plot(as.party(prune(tree_cat3_all, cp=0.20))) # 1 node
 plot(as.party(prune(tree_cat3_all, cp=0.13))) # 2 nodes
 plot(as.party(prune(tree_cat3_all, cp=0.08))) # 3 nodes
@@ -364,9 +406,10 @@ table(test_info$tol_cat3_fve, predict(tree_cat3_all, as.data.frame(test_data), t
 ```
 
 
-### random forest regression: train data
+# Random forest regression
+## Random forest regression: train data
 ```{r rf reg train}
-input_train_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$mdrym_fve))
+input_train_woNA <- data.frame(train_data_woNA, "tol"=train_info$mdrym_fve)
 class(input_train_woNA)
 
 set.seed(1)
@@ -384,7 +427,7 @@ sqrt(mean((test_info$mdrym_fve - predict(rf_train, as.data.frame(test_data_woNA)
 ```
 
 
-#### Cross-Validation
+### Cross-Validation
 ```{r rf reg train CV}
 set.seed(3)
 rf_train_cv <- rfcv(train_data_woNA, train_info$mdrym_fve, step=0.8)
@@ -393,9 +436,9 @@ with(rf_train_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
 ```
 
 
-### random forest regression: train control data
+## Random forest regression: train control data
 ```{r rf reg train control}
-input_train_control_woNA <- as.data.frame( cbind(train_data_control_woNA, "tol"=train_info_control$mdrym_fve))
+input_train_control_woNA <- data.frame(train_data_control_woNA, "tol"=train_info_control$mdrym_fve)
 class(input_train_control_woNA)
 
 set.seed(1)
@@ -413,9 +456,9 @@ sqrt(mean((test_info_control$mdrym_fve - predict(rf_train_control, as.data.frame
 ```
 
 
-### random forest regression: all data
+## Random forest regression: all data
 ```{r rf reg all}
-input_all_woNA <- as.data.frame( cbind(all_data_woNA, "tol"=all_info$mdrym_fve))
+input_all_woNA <- data.frame(all_data_woNA, "tol"=all_info$mdrym_fve)
 
 set.seed(1)
 rf_all <- randomForest(tol~. , data=input_all_woNA, ntree=1000)
@@ -432,7 +475,7 @@ sqrt(mean((test_info$mdrym_fve - predict(rf_all, as.data.frame(test_data_woNA)))
 ```
 
 
-#### Cross-Validation
+### Cross-Validation
 ```{r rf reg all CV}
 set.seed(3)
 rf_all_cv <- rfcv(all_data_woNA, all_info$mdrym_fve, step=0.8)
@@ -441,9 +484,9 @@ with(rf_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
 ```
 
 
-### random forest regression: ALL control data
+## Random forest regression: ALL control data
 ```{r rf reg all control}
-input_all_control_woNA <- as.data.frame( cbind(all_data_control_woNA, "tol"=all_info_control$mdrym_fve))
+input_all_control_woNA <- data.frame(all_data_control_woNA, "tol"=all_info_control$mdrym_fve)
 
 set.seed(1)
 rf_all_control <- randomForest(tol~. , data=input_all_control_woNA, ntree=1000)
@@ -460,17 +503,17 @@ sqrt(mean((test_info_control$mdrym_fve - predict(rf_all_control, as.data.frame(t
 ```
 
 
-### random forest classification: train data with 2 classes
+# Random forest classification
+## Random forest classification: train data with 2 classes
 ```{r rf cat2 train}
-input_cat2_train_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$tol_cat2_fve))
-input_cat2_train_woNA$tol <- train_info$tol_cat2_fve
+input_cat2_train_woNA <- data.frame(train_data_woNA, "tol"=train_info$tol_cat2_fve)
 levels(input_cat2_train_woNA$tol)
 
 set.seed(1)
 rf_cat2_train <- randomForest(tol~. , data=input_cat2_train_woNA, ntree=1000)
 print(rf_cat2_train)
 
-write.table(importance(rf_cat2_train), "../output/importance_field_rf_cat2_train.txt", sep="\t")
+write.table(importance(rf_cat2_train), "output/model/importance_field_rf_cat2_train.txt", sep="\t")
 varImpPlot(rf_cat2_train)
 
 table(predict(rf_cat2_train, test_data_woNA), test_info$tol_cat2_fve)
@@ -478,17 +521,16 @@ confusionMatrix(table(predict(rf_cat2_train, test_data_woNA), test_info$tol_cat2
 ```
 
 
-### random forest classification: train data with 3 classes
+## Random forest classification: train data with 3 classes
 ```{r rf cat3 train}
-input_cat3_train_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$tol_cat3_fve))
-input_cat3_train_woNA$tol <- train_info$tol_cat3_fve
+input_cat3_train_woNA <- data.frame(train_data_woNA, "tol"=train_info$tol_cat3_fve)
 levels(input_cat3_train_woNA$tol)
 
 set.seed(1)
 rf_cat3_train <- randomForest(tol~. , data=input_cat3_train_woNA, ntree=1000)
 print(rf_cat3_train)
 
-write.table(importance(rf_cat3_train), "../output/importance_field_rf_cat3_train.txt", sep="\t")
+write.table(importance(rf_cat3_train), "output/model/importance_field_rf_cat3_train.txt", sep="\t")
 varImpPlot(rf_cat3_train)
 
 table(predict(rf_cat3_train, test_data_woNA), test_info$tol_cat3_fve)
@@ -496,24 +538,7 @@ confusionMatrix(table(predict(rf_cat3_train, test_data_woNA), test_info$tol_cat3
 ```
 
 
-#### Plot to separate tolerant/sensitive cultivars
-```{r Plot to separate tolerant/sensitive cultivars}
-colnames(train_data)
-plot(train_data_woNA[,"PGSC0003DMG400008138"], train_data_woNA[,"A177004"], col=train_info$tol_cat2_fve, pch=19)
-plot(train_data_woNA[,"A258002"], train_data_woNA[,"A177004"], col=train_info$tol_cat3_fve, pch=19)
-
-boxplot(train_data_woNA[,"PGSC0003DMG400008138"]~train_info$tol_cat3_fve)
-boxplot(train_data[,"A177004"]~train_info$tol_cat3_fve)
-
-cor.test(train_data[,"A258002"],train_info$mdrym_fve)
-cor.test(train_data[,"A177004"],train_info$mdrym_fve)
-
-cor.test(all_data[, "A258002"], all_info$mdrym_fve)
-```
-
-
-
-#### Cross-Validation
+### Cross-Validation
 **rfcv**: This function shows the cross-validated prediction performance of models 
 with sequentially reduced number of predictors 
 (ranked by variable importance) via a nested cross-validation procedure. 
@@ -526,7 +551,8 @@ length(rf_cat3_train_cv$n.var)
 with(rf_cat3_train_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
 
 
-pdf("../../../../Doktorarbeit/figures/model_field_transcripts_rfcv_cat3_train.pdf", width=6, height=6)
+#pdf("../../../../Doktorarbeit/figures/model_field_transcripts_rfcv_cat3_train.pdf", width=6, height=6)
+pdf("figures/thesis/model_field_transcripts_rfcv_cat3_train.pdf", width=6, height=6)
 par(mar=c(4.5, 4.5, 0.5, 0.6))
 with(rf_cat3_train_cv, plot(n.var, error.cv, log="x", type="o", lwd=2, cex.lab=1.5, cex.axis=1.2,
                             xlab="number of predictors", ylab="5-fold cross-validation error"))
@@ -534,7 +560,7 @@ dev.off()
 ```
 
 
-#### Variable Selection (vs)
+### Variable Selection (vs)
 Using the OOB error as minimization criterion, carry out variable elimination from random forest, 
 by successively eliminating the least important variables (with importance as returned from random forest).
 ```{r rf cat3 train VarSel}
@@ -543,7 +569,7 @@ rf_cat3_train_vs <- varSelRF(train_data_woNA, train_info$tol_cat3_fve, ntree = 5
 #rf_cat3_train_vs <- varSelRF(train_data_woNA, train_info$tol_cat3_fve, ntree = 5000, ntreeIterat = 1000, vars.drop.frac = 0.2, c.sd=1)
 rf_cat3_train_vs
 # 18
-write.table(rf_cat3_train_vs$selected.vars, "../output/field_rf_cat3_train_selected_vars.txt", sep="\t")
+write.table(rf_cat3_train_vs$selected.vars, "output/model/field_rf_cat3_train_selected_vars.txt", sep="\t")
 rf_cat3_train_vs$selected.vars
 plot(rf_cat3_train_vs, which=1)
 plot(rf_cat3_train_vs, which=2)
@@ -553,20 +579,19 @@ vs_idx <- which(colnames(train_data_woNA) %in% rf_cat3_train_vs$selected.vars)
 ```
 
 
-### random forest classification: selected variables from field data with 3 classes
-```{r rf cat3 train selected variables}
+## Random forest classification: selected variables from field data with 3 classes
+```{r rf cat3 train selected variables, fig.width=12}
 train_data_woNA_vs <- train_data_woNA[,vs_idx]
 test_data_woNA_vs <- test_data_woNA[,vs_idx]
 
-input_train_cat3_woNA_vs <- as.data.frame( cbind(train_data_woNA_vs, "tol"=train_info$tol_cat3_fve))
-input_train_cat3_woNA_vs$tol <- train_info$tol_cat3_fve
+input_train_cat3_woNA_vs <- data.frame(train_data_woNA_vs, "tol"=train_info$tol_cat3_fve)
 levels(input_train_cat3_woNA_vs$tol)
 
 set.seed(1)
 rf_cat3_train_reduced <- randomForest(tol~. , data=input_train_cat3_woNA_vs, ntree=1000)
 print(rf_cat3_train_reduced)
 
-write.table(importance(rf_cat3_train_reduced), "../output/importance_rf_cat3_train_reduced.txt", sep="\t")
+write.table(importance(rf_cat3_train_reduced), "output/model/importance_rf_cat3_train_reduced.txt", sep="\t")
 par(mfrow=c(1,2))
 varImpPlot(rf_cat3_train_reduced)
 varImpPlot(rf_cat3_train)
@@ -577,17 +602,16 @@ confusionMatrix(table(predict(rf_cat3_train_reduced, test_data_woNA_vs), test_in
 ```
 
 
-### random forest classification: train control data with 3 classes
+## Random forest classification: train control data with 3 classes
 ```{r rf cat3 train control}
-input_cat3_train_control_woNA <- as.data.frame( cbind(train_data_control_woNA, "tol"=train_info_control$tol_cat3_fve))
-input_cat3_train_control_woNA$tol <- train_info_control$tol_cat3_fve
+input_cat3_train_control_woNA <- data.frame(train_data_control_woNA, "tol"=train_info_control$tol_cat3_fve)
 levels(input_cat3_train_control_woNA$tol)
 
 set.seed(1)
 rf_cat3_train_control <- randomForest(tol~. , data=input_cat3_train_control_woNA, ntree=1000)
 print(rf_cat3_train_control)
 
-write.table(importance(rf_cat3_train_control), "../output/importance_field_rf_cat3_train_control.txt", sep="\t")
+write.table(importance(rf_cat3_train_control), "output/model/importance_field_rf_cat3_train_control.txt", sep="\t")
 varImpPlot(rf_cat3_train_control)
 
 table(predict(rf_cat3_train_control, test_data_control_woNA), test_info_control$tol_cat3_fve)
@@ -595,24 +619,23 @@ confusionMatrix(table(predict(rf_cat3_train_control, test_data_control_woNA), te
 ```
 
 
-### random forest classification: all data with 3 classes
+## Random forest classification: all data with 3 classes
 ```{r rf cat3 all}
-input_cat3_all_woNA <- as.data.frame( cbind(all_data_woNA, "tol"=all_info$tol_cat3_fve))
-input_cat3_all_woNA$tol <- all_info$tol_cat3_fve
+input_cat3_all_woNA <- data.frame(all_data_woNA, "tol"=all_info$tol_cat3_fve)
 levels(input_cat3_all_woNA$tol)
 
 set.seed(1)
 rf_cat3_all <- randomForest(tol~. , data=input_cat3_all_woNA, ntree=1000)
 print(rf_cat3_all)
 
-write.table(importance(rf_cat3_all), "../output/importance_field_rf_cat3_all.txt", sep="\t")
+write.table(importance(rf_cat3_all), "output/model/importance_field_rf_cat3_all.txt", sep="\t")
 varImpPlot(rf_cat3_all)
 
 table(all_info$tol_cat3_fve, rf_cat3_all$predicted)
 ```
 
 
-#### Cross-Validation
+### Cross-Validation
 ```{r rf cat3 all CV}
 set.seed(13)
 rf_cat3_all_cv <- rfcv(all_data_woNA, all_info$tol_cat3_fve, step=0.8)
@@ -621,13 +644,13 @@ with(rf_cat3_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
 ```
 
 
-#### Variable Selection (vs)
+### Variable Selection (vs)
 ```{r rf cat3 all VarSel}
 set.seed(1)
 rf_cat3_all_vs <- varSelRF(all_data_woNA, all_info$tol_cat3_fve, ntree = 500, ntreeIterat = 300, vars.drop.frac = 0.2, c.sd=1)
 rf_cat3_all_vs
-# 36
-write.table(rf_cat3_all_vs$selected.vars, "../output/field_rf_cat3_all_selected_vars.txt", sep="\t")
+# 29
+write.table(rf_cat3_all_vs$selected.vars, "output/model/field_rf_cat3_all_selected_vars.txt", sep="\t")
 rf_cat3_all_vs$selected.vars
 plot(rf_cat3_all_vs, which=1)
 plot(rf_cat3_all_vs, which=2)
@@ -637,19 +660,18 @@ rf_cat3_all_vs_idx <- which(colnames(all_data_woNA) %in% rf_cat3_all_vs$selected
 ```
 
 
-### random forest classification: selected variables from all data with 3 classes
-```{r rf cat3 all selected variables}
+## Random forest classification: selected variables from all data with 3 classes
+```{r rf cat3 all selected variables, fig.width=12}
 all_data_woNA_vs <- all_data_woNA[,rf_cat3_all_vs_idx]
 
-input_all_cat3_woNA_vs <- as.data.frame( cbind(all_data_woNA_vs, "tol"=all_info$tol_cat3_fve))
-input_all_cat3_woNA_vs$tol <- all_info$tol_cat3_fve
+input_all_cat3_woNA_vs <- data.frame(all_data_woNA_vs, "tol"=all_info$tol_cat3_fve)
 levels(input_all_cat3_woNA_vs$tol)
 
 set.seed(1)
 rf_cat3_all_reduced <- randomForest(tol~. , data=input_all_cat3_woNA_vs, ntree=1000)
 print(rf_cat3_all_reduced)
 
-write.table(importance(rf_cat3_all_reduced), "../output/importance_rf_cat3_all_reduced.txt", sep="\t")
+write.table(importance(rf_cat3_all_reduced), "output/model/importance_rf_cat3_all_reduced.txt", sep="\t")
 par(mfrow=c(1,2))
 varImpPlot(rf_cat3_all_reduced)
 varImpPlot(rf_cat3_all)
@@ -657,39 +679,35 @@ par(mfrow=c(1,1))
 ```
 
 
-### random forest classification: all control data with 3 classes
+## Random forest classification: all control data with 3 classes
 ```{r rf cat3 all control}
-input_cat3_all_control_woNA <- as.data.frame( cbind(all_data_control_woNA, "tol"=all_info_control$tol_cat3_fve))
-input_cat3_all_control_woNA$tol <- all_info_control$tol_cat3_fve
+input_cat3_all_control_woNA <- data.frame(all_data_control_woNA, "tol"=all_info_control$tol_cat3_fve)
 levels(input_cat3_all_control_woNA$tol)
 
 set.seed(1)
 rf_cat3_all_control <- randomForest(tol~. , data=input_cat3_all_control_woNA, ntree=1000)
 print(rf_cat3_all_control)
 
-write.table(importance(rf_cat3_all_control), "../output/importance_field_rf_cat3_all_control.txt", sep="\t")
+write.table(importance(rf_cat3_all_control), "output/model/importance_field_rf_cat3_all_control.txt", sep="\t")
 varImpPlot(rf_cat3_all_control)
 
 table(all_info_control$tol_cat3_fve, rf_cat3_all_control$predicted)
 ```
 
 
-#######################
-
-
-### export importance tables
+# Export importance tables
 ```{r export importance tables}
-importance_rf_reg <- as.data.frame(cbind(importance(rf_train), 
+importance_rf_reg <- data.frame(importance(rf_train), 
                             importance(rf_train_control), 
                             importance(rf_all), 
-                            importance(rf_all_control)))
+                            importance(rf_all_control))
 colnames(importance_rf_reg) <- c("reg_train", "reg_train_control", "reg_all", "reg_all_control")
 head(importance_rf_reg)
 
-importance_rf_cat3 <- as.data.frame(cbind(importance(rf_cat3_train), 
+importance_rf_cat3 <- data.frame(importance(rf_cat3_train), 
                             importance(rf_cat3_train_control), 
                             importance(rf_cat3_all), 
-                            importance(rf_cat3_all_control)))
+                            importance(rf_cat3_all_control))
 colnames(importance_rf_cat3) <- c("cat3_train", "cat3_train_control", "cat3_all", "cat3_all_control")
 head(importance_rf_cat3)
 
@@ -697,9 +715,13 @@ importance_rf <- cbind(importance_rf_reg, importance_rf_cat3)
 importance_rf_sort <- importance_rf[order(importance_rf$cat3_train),]
 head(importance_rf_sort)
 importance_rf_sort2 <- importance_rf[order(importance_rf$cat3_all),]
+```
 
 
-pdf("../../../../Doktorarbeit/figures/model_field_transcripts_importance_cat3_train.pdf", width=6, height=6)
+# Plot importance
+```{r plot importance}
+#pdf("../../../../Doktorarbeit/figures/model_field_transcripts_importance_cat3_train.pdf", width=6, height=6)
+pdf("figures/thesis/model_field_transcripts_importance_cat3_train.pdf", width=6, height=6)
 par(mar=c(4.5, 18, 0.5, 0.5))
 barplot(tail(importance_rf_sort$cat3_train,n=20), horiz = T, names=tail(rownames(importance_rf_sort),n=20), las=2, xaxt="n", cex.axis=1.5, cex.names=1.5)
 axis(1, las=1)
@@ -718,19 +740,19 @@ plot(importance_rf_cat3$cat3_train, importance_rf_cat3$cat3_train_control, pch=1
 plot(importance_rf_cat3$cat3_train, importance_rf_reg$reg_train, pch=19, cex=1.5)
 plot(importance_rf_cat3$cat3_train, importance_rf_cat3$cat3_all, pch=19, cex=1.5)
 
-write.table(importance_rf_reg, "../output/field_importance_rf_reg.txt", sep="\t")
-write.table(importance_rf_cat3, "../output/field_importance_rf_cat3.txt", sep="\t")
+write.table(importance_rf_reg, "output/model/field_importance_rf_reg.txt", sep="\t")
+write.table(importance_rf_cat3, "output/model/field_importance_rf_cat3.txt", sep="\t")
 ```
 
 
-### PLS
-#### 1. PLS (Partial Least Squares) for all variables to compute VIP
+# PLS
+## Step 1. PLS (Partial Least Squares) for all variables to compute VIP
 ```{r pls all}
-input_all_woNA <- as.data.frame( cbind(train_data_woNA, "tol"=train_info$mdrym_fve))
+input_all_woNA <- data.frame(train_data_woNA, "tol"=train_info$mdrym_fve)
 
 pls_all <- plsr(tol ~ ., data=input_all_woNA, validation="LOO", method="oscorespls")
 
-summary(pls_all)
+# summary(pls_all)
 
 par(mfrow=c(1,2))
 plot(pls_all, "validation", estimate="CV")
@@ -752,7 +774,7 @@ plot(R2(pls_all))
 # 12 --> 11 comps!
 abline(v=11, col="red")
 
-test_data_woNA_2 <- as.data.frame( cbind(test_data_woNA, "tol"=test_info$mdrym_fve))
+test_data_woNA_2 <- data.frame(test_data_woNA, "tol"=test_info$mdrym_fve)
 RMSEP(pls_all, ncomp=1, newdata=test_data_woNA_2, intercept=FALSE)
 RMSEP(pls_all, ncomp=2, newdata=test_data_woNA_2, intercept=FALSE)
 RMSEP(pls_all, ncomp=3, newdata=test_data_woNA_2, intercept=FALSE)
@@ -771,7 +793,7 @@ cor(y.est, test_info$mdrym_fve)
 ```
 
 
-#### VIP function
+## VIP function
 ```{r VIP function}
 VIPjh=function(object, j, h)
 {
@@ -790,7 +812,7 @@ VIPjh=function(object, j, h)
 ```
 
 
-#### 2. Compute VIP-value for all variables and 3. Sort them accordingly
+## Step 2. Compute VIP-value for all variables and  Step 3. Sort them accordingly
 
 ```{r compute VIP values}
 p <- ncol(train_data)
@@ -801,12 +823,12 @@ for(j in 1:p)
    VIP[j]=VIPjh(pls_all, j, M.pls)
 
 # Plot result
-pdf("Step_2.pdf")
+pdf("figures/model/field_VIP_Step_2.pdf")
 plot(VIP)
 dev.off()
 
 VIP_table <- cbind(colnames(train_data), VIP)
-VIP_table[order(VIP_table[,2], decreasing=T),]
+head(VIP_table[order(VIP_table[,2], decreasing=T),])
 
 VIPmax=sort(VIP, decreasing=T)
 for (i in 1:p)
@@ -817,32 +839,33 @@ VIP_1=vector("numeric", p)
 for(j in 1:p)
    VIP_1[j]=VIPjh(pls_all, j, 1)
 VIP_1_table <- cbind(colnames(train_data), VIP_1)
-VIP_1_table[order(VIP_1_table[,2], decreasing=T),]
+head(VIP_1_table[order(VIP_1_table[,2], decreasing=T),])
 
 ```
 
 
-### BioMark package
+# BioMark package
 ```{r BioMark}
-stability_all <- get.biom(X = train_data_woNA, Y = train_info$mdrym_fve, fmethod=c("pcr", "pls", "vip", "lasso"), type = "stab")
-summary(stability_all)
-selection(stability_all)
-
-# only two class discrimination possible!
-HC_cat2 <- get.biom(X = train_data_woNA, Y = train_info$tol_cat2_fve, fmethod=c("studentt","pcr", "pls", "vip"), type = "HC")
-summary(HC_cat2)
-selection(HC_cat2)
-
-selection(HC_cat2)$pls[[1]]
-selection(HC_cat2)$vip[[1]]
-selection(HC_cat2)$pcr[[1]]
-intersect( selection(HC_cat2)$pls[[1]], selection(HC_cat2)$vip[[1]])
-colnames(train_data_control_woNA)
+# stability_all <- get.biom(X = train_data_woNA, Y = train_info$mdrym_fve, fmethod=c("pcr", "pls", "vip", "lasso"), type = "stab")
+# summary(stability_all)
+# selection(stability_all)
+# 
+# # only two class discrimination possible!
+# HC_cat2 <- get.biom(X = train_data_woNA, Y = train_info$tol_cat2_fve, fmethod=c("studentt","pcr", "pls", "vip"), type = "HC")
+# summary(HC_cat2)
+# selection(HC_cat2)
+# 
+# selection(HC_cat2)$pls[[1]]
+# selection(HC_cat2)$vip[[1]]
+# selection(HC_cat2)$pcr[[1]]
+# intersect( selection(HC_cat2)$pls[[1]], selection(HC_cat2)$vip[[1]])
+# colnames(train_data_control_woNA)
 ```
 
 
-
+# Save workspace and sessionInfo
 ```{r save workspace}
 save.image("qpcr_model_field.RData")
+sessionInfo()
 ```
 

@@ -1,56 +1,100 @@
-Prediction Model using qPCR data
-Field Models were trained on 2 datasets and tested on another independent field trial
-Resulted in 3 combinations
-========================================================
+---
+title: "Prediction Model using qPCR data (TROST field validation)"
+author: "Heike Sprenger"
+date: "Thursday, March 24, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 4
+---
 
-```{r setup}
-setwd("TROST/Sequencing/qpcr_data/scripts/")
-load("qpcr_model_field_cross.RData")
+**Prediction Model using qPCR data**
+
+* Field Models were trained on 2 datasets and tested on another independent field trial
+* Resulted in 3 combinations
+
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
 ```
 
-### Load packages
-```{r load packages}
-library("rpart")
-library("randomForest")
-library("partykit")
-library("party")
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+library(plyr)
+library(rpart)
+library(randomForest)
+library(partykit)
+library(party)
 library(caret) 
 library(pls)
 library(BioMark)
-library(plyr)
+library(varSelRF)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis", tidy = TRUE)
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_model_field_cross.RData")
 ```
 
-### Define samplelist
-```{r define samplelist}
-tolerance <- read.table("../../../Prediction_Model/output/tolerance_phenotyper_metadata_2sub.txt", sep="\t", header=TRUE)
-samplelist <- read.table("../output/samplelist.txt", header=TRUE, sep="\t")
 
+# Define samplelist
+```{r define samplelist}
+tolerance <- read.table("../trost_phenotypes/output/tolerance_phenotyper_metadata_2sub.txt", 
+                        sep = "\t", header = TRUE)
+
+# relevel tolerance factors
 tolerance$tol_cat2_fve <- factor(tolerance$tol_cat2_fve, levels = c("low", "high"))
-tolerance$tol_cat3_fve <- factor(tolerance$tol_cat3_fve, levels = c("low", "mid", "high"))
+tolerance$tol_cat3_fve <- factor(tolerance$tol_cat3_fve, levels = c("low","mid", "high"))
+
+samplelist <- read.table("output/trost/samplelist.txt", header=TRUE, sep="\t")
 
 # join metadata
 head(tolerance)
 head(samplelist)
 
 # join samplelist
-samplelist_joined <- join(samplelist, tolerance, by="subspecies_id")
-samplelist_field <- subset(samplelist_joined, samplelist_joined$cultivation=="field")
+samplelist_joined <- join(samplelist, tolerance, by = "subspecies_id")
+samplelist_field <- droplevels(subset(samplelist_joined, samplelist_joined$cultivation == "field"))
 ```
 
 
-### data without NAs from PCA (rnipals, no scaling)
-```{r data without NAs}
-log_norm_ct_woNA <- read.table("../output/log_norm_ct_prep_none_rnipals_completeObs.txt", header=TRUE, sep="\t")
+# Load data without NAs from PCA (rnipals, no scaling)
+```{r load data without NAs}
+log_norm_ct_woNA <- read.table("output/log_norm_ct_none_rnipals_completeObs.txt", header=TRUE, sep="\t")
 dim(log_norm_ct_woNA)
+
+# only field data
 log_norm_ct_field_woNA <- subset(log_norm_ct_woNA, samplelist$cultivation=="field")
 dim(log_norm_ct_field_woNA)
 
 ##### all #### with 31 cultivars
 all_data_woNA <- subset(log_norm_ct_field_woNA, !samplelist_field$model_set=="NA")
-all_info <- subset (samplelist_field, !samplelist_field$model_set=="NA")
+all_info <- droplevels(subset (samplelist_field, !samplelist_field$model_set=="NA"))
 ```
 
-#### training data
+
+## Training data
 ```{r training data}
 # training: two trials
 mpi2011_jki2012_data <- subset (all_data_woNA, 
@@ -69,7 +113,8 @@ mpi2012_jki2012_info <- subset (all_info,
                                 all_info$trial=="mpi_feld_2012" | all_info$trial=="jki_feld_2012")
 ```
 
-#### test data
+
+## Test data
 ```{r test data}
 # test: single trial
 mpi2011_data <- subset (all_data_woNA,  all_info$trial=="mpi_feld_2011")
@@ -83,12 +128,10 @@ jki2012_info <- subset (all_info, all_info$trial=="jki_feld_2012")
 ```
 
 
-### random forest classification: train data
-#### train data: mpi2011, jki2012
-#### test data: mpi2012
+# Random forest classification
+## train data: mpi2011, jki2012 --> test data: mpi2012
 ```{r rf cat3 mpi2011_jki2012}
-input_cat3_mpi2011_jki2012 <- as.data.frame( cbind(mpi2011_jki2012_data, 
-                                              "tol"=mpi2011_jki2012_info$tol_cat3_fve))
+input_cat3_mpi2011_jki2012 <- data.frame(mpi2011_jki2012_data, "tol"=mpi2011_jki2012_info$tol_cat3_fve)
 
 set.seed(2)
 rf_cat3_mpi2011_jki2012 <- randomForest(tol~. , data=input_cat3_mpi2011_jki2012, ntree=1000)
@@ -109,11 +152,9 @@ confusionMatrix(table(predict(rf_cat3_mpi2011_jki2012, mpi2012_data), mpi2012_in
 ```
 
 
-#### train data: mpi2011, mpi2012
-#### test data: jki2012
+## train data: mpi2011, mpi2012 --> test data: jki2012
 ```{r rf cat3 mpi2011_mpi2012}
-input_cat3_mpi2011_mpi2012 <- as.data.frame( cbind(mpi2011_mpi2012_data, 
-                                              "tol"=mpi2011_mpi2012_info$tol_cat3_fve))
+input_cat3_mpi2011_mpi2012 <- data.frame(mpi2011_mpi2012_data, "tol"=mpi2011_mpi2012_info$tol_cat3_fve)
 
 set.seed(2)
 rf_cat3_mpi2011_mpi2012 <- randomForest(tol~. , data=input_cat3_mpi2011_mpi2012, ntree=1000)
@@ -133,11 +174,9 @@ confusionMatrix(table(predict(rf_cat3_mpi2011_mpi2012, jki2012_data), jki2012_in
 ```
 
 
-#### train data: jki2012, mpi2012
-#### test data: mpi2011
+## train data: jki2012, mpi2012 --> test data: mpi2011
 ```{r rf cat3 mpi2012_jki2012}
-input_cat3_mpi2012_jki2012 <- as.data.frame( cbind(mpi2012_jki2012_data, 
-                                              "tol"=mpi2012_jki2012_info$tol_cat3_fve))
+input_cat3_mpi2012_jki2012 <- data.frame(mpi2012_jki2012_data, "tol"=mpi2012_jki2012_info$tol_cat3_fve)
 
 set.seed(2)
 rf_cat3_mpi2012_jki2012 <- randomForest(tol~. , data=input_cat3_mpi2012_jki2012, ntree=1000)
@@ -158,12 +197,10 @@ confusionMatrix(table(predict(rf_cat3_mpi2012_jki2012, mpi2011_data), mpi2011_in
 
 
 
-### random forest regression
-#### train data: mpi2011, jki2012
-#### test data: mpi2012
+# Random forest regression
+## train data: mpi2011, jki2012 --> test data: mpi2012
 ```{r rf reg mpi2011_jki2012}
-input_reg_mpi2011_jki2012 <- as.data.frame( cbind(mpi2011_jki2012_data, 
-                                              "tol"=mpi2011_jki2012_info$mdrym_fve))
+input_reg_mpi2011_jki2012 <- data.frame(mpi2011_jki2012_data, "tol"=mpi2011_jki2012_info$mdrym_fve)
 
 rf_reg_mpi2011_jki2012 <- randomForest(tol~. , data=input_reg_mpi2011_jki2012, ntree=1000)
 print(rf_reg_mpi2011_jki2012)
@@ -178,11 +215,9 @@ sqrt(mean((mpi2012_info$mdrym_fve - predict(rf_reg_mpi2011_jki2012, mpi2012_data
 ```
 
 
-#### train data: mpi2011, mpi2012
-#### test data: jki2012
+## train data: mpi2011, mpi2012 --> test data: jki2012
 ```{r rf reg mpi2011_mpi2012}
-input_reg_mpi2011_mpi2012 <- as.data.frame( cbind(mpi2011_mpi2012_data, 
-                                              "tol"=mpi2011_mpi2012_info$mdrym_fve))
+input_reg_mpi2011_mpi2012 <- data.frame(mpi2011_mpi2012_data, "tol"=mpi2011_mpi2012_info$mdrym_fve)
 
 rf_reg_mpi2011_mpi2012 <- randomForest(tol~. , data=input_reg_mpi2011_mpi2012, ntree=1000)
 print(rf_reg_mpi2011_mpi2012)
@@ -197,11 +232,9 @@ sqrt(mean((jki2012_info$mdrym_fve - predict(rf_reg_mpi2011_mpi2012, jki2012_data
 ```
 
 
-#### train data: jki2012, mpi2012
-#### test data: mpi2011
+## train data: jki2012, mpi2012 --> test data: mpi2011
 ```{r rf reg mpi2012_jki2012}
-input_reg_mpi2012_jki2012 <- as.data.frame( cbind(mpi2012_jki2012_data, 
-                                              "tol"=mpi2012_jki2012_info$mdrym_fve))
+input_reg_mpi2012_jki2012 <- data.frame(mpi2012_jki2012_data, "tol"=mpi2012_jki2012_info$mdrym_fve)
 
 rf_reg_mpi2012_jki2012 <- randomForest(tol~. , data=input_reg_mpi2012_jki2012, ntree=1000)
 print(rf_reg_mpi2012_jki2012)
@@ -221,8 +254,9 @@ sqrt(mean((mpi2011_info$mdrym_fve - predict(rf_reg_mpi2012_jki2012, mpi2011_data
 ```
 
 
-
+# Save workspace and sessionInfo
 ```{r save workspace}
 save.image("qpcr_model_field_cross.RData")
+sessionInfo()
 ```
 
