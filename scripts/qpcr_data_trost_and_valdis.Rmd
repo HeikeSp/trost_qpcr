@@ -132,6 +132,17 @@ write.table(log_norm_ct_all, "output/model/log_norm_ct_trost_valdis.txt", sep="\
 ```
 
 
+## Correlation plot for TROST subset of 42 valdis genes
+```{r corrplot for TROST subset of 42 valdis genes}
+cor_log_norm_ct <- cor(log_norm_ct_subset_trost, use="complete")
+write.table(cor_log_norm_ct, "output/trost/cor_log_norm_ct_subset_42_genes.txt", sep="\t")
+
+pdf("figures/trost/cor_log_norm_ct_subset_42_genes.pdf", width=10, height=10)
+corrplot(cor_log_norm_ct, method="color", order="hclust", hclust.method="average", tl.col="black", tl.cex=0.5)
+dev.off()
+```
+
+
 # PCA
 ```{r PCA}
 log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct_all, scale_method = "pareto", center_option = FALSE, 

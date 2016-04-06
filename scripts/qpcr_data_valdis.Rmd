@@ -866,6 +866,18 @@ dev.off()
 ```
 
 
+# Correlation plot
+```{r corrplot}
+cor_log_norm_ct <- cor(log_norm_ct, use="complete")
+write.table(cor_log_norm_ct, "output/valdis/cor_log_norm_ct.txt", sep="\t")
+
+pdf("figures/valdis/cor_log_norm_ct.pdf", width=10, height=10)
+corrplot(cor_log_norm_ct, method="color", order="hclust", hclust.method="average", tl.col="black", tl.cex=0.5)
+dev.off()
+```
+
+
+
 # Save workspace
 ```{r save workspace}
 save.image("qpcr_data_valdis.RData")

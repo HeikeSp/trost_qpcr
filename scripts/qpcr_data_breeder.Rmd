@@ -58,10 +58,12 @@ source("../functions/func_boxplot.R")
 samplelist <- read.table("input/breeder/samplelist_breeder.txt", header=TRUE, sep="\t")
 
 # remove sample with many high Ct values and Undetermined values
-which(samplelist$sample_id == "885463")
+which(samplelist$sampleID == "885463")
 samplelist <- samplelist[-200,]
 
 samplelist$year <- as.factor(samplelist$year)
+
+write.table(samplelist, "output/breeder/samplelist.txt", sep="\t")
 ```
 
 
@@ -84,7 +86,7 @@ head(assoc_pgsc)
 rawdata <- read.table("input/breeder/results_final_breeder.txt", header = T, sep="\t", check.names = F)
 
 # remove sample with many high Ct values and Undetermined values
-remove_idx <- which(rawdata$sample_id == "885463")
+remove_idx <- which(rawdata$sampleID == "885463")
 rawdata <- rawdata[-remove_idx,]
 
 # replace Undetermined Ct values by NA (or 40???)
@@ -105,19 +107,19 @@ sum(is.na(rawdata_cleaned$Ct))
 table(rawdata_cleaned$primer_name)
 
 # order by DMT id
-rawdata_cleaned <- rawdata_cleaned[order(rawdata_cleaned$sample_id), ]
+rawdata_cleaned <- rawdata_cleaned[order(rawdata_cleaned$sampleID), ]
 
 # merge with primer info
 rawdata_cleaned_merge <- merge(rawdata_cleaned, primer_info, by = "primer_name")
 
-# extract table with sample_id, DMT, and Ct value
+# extract table with sampleID, DMT, and Ct value
 rawdata_cleaned_values <- rawdata_cleaned_merge[,c(3,14,10)]
 head(rawdata_cleaned_values)
 
-# sample_id in rows, DMT in columns
-rawdata_cleaned_values_cast <- cast(rawdata_cleaned_values, sample_id ~ DMT, value = "Ct")
+# sampleID in rows, DMT in columns
+rawdata_cleaned_values_cast <- cast(rawdata_cleaned_values, sampleID ~ DMT, value = "Ct")
 
-rownames(rawdata_cleaned_values_cast) <- rawdata_cleaned_values_cast$sample_id
+rownames(rawdata_cleaned_values_cast) <- rawdata_cleaned_values_cast$sampleID
 rawdata_cleaned_ct <- as.data.frame(rawdata_cleaned_values_cast[,-1])
 dim(rawdata_cleaned_ct)
 # rows: 203 samples
@@ -260,7 +262,7 @@ log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct, scale_method = "none", cente
 
 
 # export completeObs for later use by RandomForest
-#write.table(log_norm_ct_none_rnipals@completeObs, "output/log_norm_ct_none_rnipals_completeObs.txt", sep="\t")
+#write.table(log_norm_ct_none_rnipals@completeObs, "output/breeder/log_norm_ct_none_rnipals_completeObs.txt", sep="\t")
 ```
 
 
@@ -351,7 +353,7 @@ plot(log_norm_ct_none_rnipals@scores[,1],
 
 text(log_norm_ct_none_rnipals@scores[,1], 
      log_norm_ct_none_rnipals@scores[,2], 
-     labels=samplelist$sample_id, cex=0.7)
+     labels=samplelist$sampleID, cex=0.7)
 dev.off()
 
 palette("default")
