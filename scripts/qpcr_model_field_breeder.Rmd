@@ -1,0 +1,524 @@
+---
+title: "Prediction Model using qPCR data (TROST field) to validate breeder trials"
+author: "Heike Sprenger"
+date: "Wednesday, March 30, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_float: true
+    toc_depth: 4
+---
+
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+library(plyr)
+library(rpart)
+library(randomForest)
+library(partykit)
+library(party)
+library(caret) 
+library(pls)
+library(BioMark)
+library(varSelRF)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_model_field_breeder.RData")
+```
+
+
+# Load Data
+```{r load data}
+tolerance <- read.table("../trost_phenotypes/output/tolerance_phenotyper_metadata_2sub.txt", 
+                        sep = "\t", header = TRUE)
+
+# relevel tolerance factors
+tolerance$tol_cat2_fve <- factor(tolerance$tol_cat2_fve, levels = c("low", "high"))
+tolerance$tol_cat3_fve <- factor(tolerance$tol_cat3_fve, levels = c("low","mid", "high"))
+
+##############
+
+# TROST data (subset of 43 genes!)
+samplelist_trost <- read.table("output/trost/samplelist.txt", header=TRUE, sep="\t")
+
+# --> comes from: "qpcr_data_trost_and_breeder.Rmd"
+log_norm_ct_subset_trost <- read.table("output/model/log_norm_ct_trost_subset_43_genes.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_subset_trost)
+# 356 43
+
+##############
+
+# Breeder data
+samplelist_breeder <- read.table("output/breeder/samplelist.txt", header=TRUE, sep="\t")
+log_norm_ct_breeder <- read.table("output/breeder/log_norm_ct.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_breeder)
+# 203 43
+
+##############
+
+# TROST + Breeder data --> comes from: "qpcr_data_trost_and_valdis.Rmd"
+samplelist_all <- read.table("output/model/samplelist_trost_breeder.txt", header=TRUE, sep="\t")
+log_norm_ct_all <- read.table("output/model/log_norm_ct_trost_breeder.txt", header=TRUE, sep="\t")
+dim(samplelist_all)
+dim(log_norm_ct_all)
+# 559 43
+```
+
+
+## Define TROST training data
+```{r define training data}
+# join metadata
+head(tolerance)
+head(samplelist_trost)
+levels(samplelist_trost$treatment) <- c("control", "drought stress")
+
+# join TROST samplelist with tolerance information
+samplelist_trost_joined <- join(samplelist_trost, tolerance, by="subspecies_id")
+samplelist_trost_field <- droplevels( subset(samplelist_trost_joined, samplelist_trost_joined$cultivation=="field"))
+
+# only TROST field data
+log_norm_ct_trost_field <- subset(log_norm_ct_subset_trost, samplelist_trost$cultivation=="field")
+dim(log_norm_ct_trost_field)
+
+# train/test data
+train_data <- subset(log_norm_ct_trost_field, samplelist_trost_field$model_set=="train")
+test_data <- subset(log_norm_ct_trost_field, samplelist_trost_field$model_set=="test")
+
+# train/test info
+train_info <- subset(samplelist_trost_field, samplelist_trost_field$model_set=="train")
+test_info <- subset(samplelist_trost_field, samplelist_trost_field$model_set=="test")
+```
+
+
+## Define control data (and meta data)
+```{r define control data}
+# data
+train_data_control <- droplevels(subset(train_data, train_info$treatment=="control"))
+test_data_control <- droplevels(subset(test_data, test_info$treatment=="control"))
+
+# meta data
+train_info_control <- droplevels(subset(train_info, train_info$treatment=="control"))
+test_info_control <- droplevels(subset(test_info, test_info$treatment=="control"))
+```
+
+
+## Define all TROST data (without 3 cultivars --> model_set=="NA") and subset of all TROST control samples
+```{r define all data (control)}
+# all TROST samples (without NA --> 3 cultivars)
+all_data <- subset(log_norm_ct_trost_field, !samplelist_trost_field$model_set=="NA")
+all_info <- subset (samplelist_trost_field, !samplelist_trost_field$model_set=="NA")
+
+
+# all TROST control samples (without NA --> 3 cultivars)
+all_data_control <- subset(log_norm_ct_trost_field, 
+                           samplelist_trost_field$treatment=="control" & !samplelist_trost_field$model_set=="NA")
+
+all_info_control <- subset (samplelist_trost_field, 
+                            samplelist_trost_field$treatment=="control" & !samplelist_trost_field$model_set=="NA")
+```
+
+
+
+# Define all Breeder data (without 3 cultivars --> model_set=="NA")
+```{r define all breeder data}
+samplelist_breeder_joined <- join(samplelist_breeder, tolerance, by="subspecies_id")
+dim(samplelist_breeder_joined)
+
+all_info_breeder <- droplevels(subset (samplelist_breeder_joined, !samplelist_breeder_joined$model_set=="NA"))
+
+# information for separate trials or combinations
+all_info_norika_2011 <- droplevels(subset(all_info_breeder, all_info_breeder$trial == "Norika_2011"))
+all_info_norika_2012 <- droplevels(subset(all_info_breeder, all_info_breeder$trial == "Norika_2012"))
+all_info_petersgroden_2011 <- droplevels(subset(all_info_breeder, all_info_breeder$trial == "Petersgroden_2011"))
+all_info_petersgroden_2012 <- droplevels(subset(all_info_breeder, all_info_breeder$trial == "Petersgroden_2012"))
+all_info_windeby_2011 <- droplevels(subset(all_info_breeder, all_info_breeder$trial == "Windeby_2011"))
+all_info_windeby_2012 <- droplevels(subset(all_info_breeder, all_info_breeder$trial == "Windeby_2012"))
+
+# 2011/2012
+all_info_2011 <- subset(all_info_breeder, all_info_breeder$year == "2011")
+all_info_2012 <- subset(all_info_breeder, all_info_breeder$year == "2012")
+
+# locations
+all_info_norika <- subset(all_info_breeder, all_info_breeder$location_name == "Norika")
+all_info_petersgroden <- subset(all_info_breeder, all_info_breeder$location_name == "Petersgroden")
+all_info_windeby <- subset(all_info_breeder, all_info_breeder$location_name == "Windeby")
+```
+
+
+
+# Load data without NAs from PCA (rnipals, no scaling, completeObs)
+* comes from: ``qpcr_data_trost_and_breeder.Rmd``
+
+## Load data without NAs: TROST
+```{r data without NAs trost}
+log_norm_ct_woNA_all <- read.table("output/model/log_norm_ct_prep_none_rnipals_completeObs_trost_breeder.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_woNA_all)
+# 559 43
+
+#### only TROST field data ####
+log_norm_ct_trost_field_woNA <- subset(log_norm_ct_woNA_all, 
+                                       samplelist_all$cultivation == "field" & samplelist_all$trost_breeder == "trost")
+dim(log_norm_ct_trost_field_woNA)
+# 220 43
+
+##### train/test #####
+train_data_woNA <- subset(log_norm_ct_trost_field_woNA, samplelist_trost_field$model_set=="train")
+test_data_woNA <- subset(log_norm_ct_trost_field_woNA, samplelist_trost_field$model_set=="test")
+dim(train_data_woNA)
+dim(test_data_woNA)
+
+##### control ####
+train_data_control_woNA <- subset(train_data_woNA, train_info$treatment=="control")
+test_data_control_woNA <- subset(test_data_woNA, test_info$treatment=="control")
+
+##### all ####
+all_data_woNA <- subset(log_norm_ct_trost_field_woNA, !samplelist_trost_field$model_set=="NA")
+dim(all_data_woNA)
+# 202 43
+
+#### all control samples #####
+all_data_control_woNA <- subset(log_norm_ct_trost_field_woNA, 
+                                samplelist_trost_field$treatment == "control" & !samplelist_trost_field$model_set == "NA")
+```
+
+
+## Load data without NAs: Breeder
+```{r data without NAs breeder}
+#### only Breeder data #####
+log_norm_ct_breeder_woNA <- subset(log_norm_ct_woNA_all, samplelist_all$trost_breeder == "breeder")
+dim(log_norm_ct_breeder_woNA)
+# 203 43
+
+# without 3 cultivars --> model_set=="NA"
+all_data_breeder_woNA <- subset(log_norm_ct_breeder_woNA, !samplelist_breeder_joined$model_set=="NA")
+dim(all_data_breeder_woNA)
+# 185 43
+
+
+dim(all_info_breeder)
+
+# information for separate trials or combinations
+all_data_woNA_norika_2011 <- subset(all_data_breeder_woNA, all_info_breeder$trial == "Norika_2011")
+all_data_woNA_norika_2012 <- subset(all_data_breeder_woNA, all_info_breeder$trial == "Norika_2012")
+all_data_woNA_petersgroden_2011 <- subset(all_data_breeder_woNA, all_info_breeder$trial == "Petersgroden_2011")
+all_data_woNA_petersgroden_2012 <- subset(all_data_breeder_woNA, all_info_breeder$trial == "Petersgroden_2012")
+all_data_woNA_windeby_2011 <- subset(all_data_breeder_woNA, all_info_breeder$trial == "Windeby_2011")
+all_data_woNA_windeby_2012 <- subset(all_data_breeder_woNA, all_info_breeder$trial == "Windeby_2012")
+
+# 2011/2012
+all_data_woNA_2011 <- subset(all_data_breeder_woNA, all_info_breeder$year == "2011")
+all_data_woNA_2012 <- subset(all_data_breeder_woNA, all_info_breeder$year == "2012")
+
+# locations
+all_data_woNA_norika <- subset(all_data_breeder_woNA, all_info_breeder$location_name == "Norika")
+all_data_woNA_petersgroden <- subset(all_data_breeder_woNA, all_info_breeder$location_name == "Petersgroden")
+all_data_woNA_windeby <- subset(all_data_breeder_woNA, all_info_breeder$location_name == "Windeby")
+```
+
+
+# Random forest regression
+## Random forest regression: all data
+```{r rf reg all}
+input_all_woNA <- data.frame(all_data_woNA, "tol" = all_info$mdrym_fve)
+
+set.seed(1)
+rf_all <- randomForest(tol~. , data=input_all_woNA, ntree=1000)
+print(rf_all)
+
+#importance(rf_all)
+varImpPlot(rf_all)
+
+plot(all_info$mdrym_fve, rf_all$predicted)
+abline(0,1)
+cor.test(all_info$mdrym_fve, rf_all$predicted)
+
+plot(test_info$mdrym_fve, predict(rf_all, test_data_woNA))
+sqrt(mean((test_info$mdrym_fve - predict(rf_all, as.data.frame(test_data_woNA)))^2))
+```
+
+
+## Random forest regression: predict DRYM for breeder data
+```{r rf reg all predict DRYM for breeder data}
+rf_all_pred_breeder <- predict(rf_all, all_data_breeder_woNA)
+
+plot(all_info_breeder$mdrym_fve, rf_all_pred_breeder, 
+     xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19,
+     xlim = c(-0.06, 0.1), ylim = c(-0.06, 0.1))
+abline(0, 1, col = "red")
+
+cor.test(all_info_breeder$mdrym_fve, rf_all_pred_breeder)
+sqrt(mean((all_info_breeder$mdrym_fve - rf_all_pred_breeder)^2))
+
+# Norika 2011/2012
+rf_all_pred_norika_2011 <- predict(rf_all, all_data_woNA_norika_2011)
+rf_all_pred_norika_2012 <- predict(rf_all, all_data_woNA_norika_2012)
+
+plot(all_info_norika_2011$mdrym_fve, rf_all_pred_norika_2011, xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19)
+text(all_info_norika_2011$mdrym_fve, rf_all_pred_norika_2011, labels = all_info_norika_2011$cultivar, cex = 0.6)
+plot(all_info_norika_2012$mdrym_fve, rf_all_pred_norika_2012, xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19)
+text(all_info_norika_2012$mdrym_fve, rf_all_pred_norika_2012, labels = all_info_norika_2012$cultivar, cex = 0.6)
+```
+
+
+# Random forest classification
+## Random forest classification: all data with 3 classes
+```{r rf cat3 all}
+input_cat3_all_woNA <- data.frame(all_data_woNA, "tol"=all_info$tol_cat3_fve)
+levels(input_cat3_all_woNA$tol)
+
+set.seed(1)
+rf_cat3_all <- randomForest(tol~. , data=input_cat3_all_woNA, ntree=1000)
+print(rf_cat3_all)
+
+#write.table(importance(rf_cat3_all), "output/model/importance_field_rf_cat3_all.txt", sep="\t")
+varImpPlot(rf_cat3_all)
+
+#table(all_info$tol_cat3_fve, rf_cat3_all$predicted)
+```
+
+
+### Cross-Validation
+```{r rf cat3 all CV}
+set.seed(13)
+rf_cat3_all_cv <- rfcv(all_data_woNA, all_info$tol_cat3_fve, step=0.8)
+rf_cat3_all_cv$n.var
+with(rf_cat3_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
+```
+
+
+### Variable Selection (vs)
+```{r rf cat3 all VarSel}
+set.seed(1)
+rf_cat3_all_vs <- varSelRF(all_data_woNA, all_info$tol_cat3_fve, ntree = 500, ntreeIterat = 300, vars.drop.frac = 0.2, c.sd=1)
+rf_cat3_all_vs
+# 27
+#write.table(rf_cat3_all_vs$selected.vars, "output/model/field_rf_cat3_all_selected_vars.txt", sep="\t")
+#rf_cat3_all_vs$selected.vars
+plot(rf_cat3_all_vs, which=1)
+plot(rf_cat3_all_vs, which=2)
+
+# indices of selected variables
+rf_cat3_all_vs_idx <- which(colnames(all_data_woNA) %in% rf_cat3_all_vs$selected.vars)
+```
+
+
+## Random forest classification: selected variables from all data with 3 classes
+```{r rf cat3 all selected variables, fig.width=12}
+all_data_woNA_vs <- all_data_woNA[,rf_cat3_all_vs_idx]
+dim(all_data_woNA_vs)
+# 202 27
+
+input_all_cat3_woNA_vs <- data.frame(all_data_woNA_vs, "tol"=all_info$tol_cat3_fve)
+levels(input_all_cat3_woNA_vs$tol)
+
+set.seed(1)
+rf_cat3_all_reduced <- randomForest(tol~. , data=input_all_cat3_woNA_vs, ntree=1000)
+print(rf_cat3_all_reduced)
+
+#write.table(importance(rf_cat3_all_reduced), "output/model/importance_rf_cat3_all_reduced.txt", sep="\t")
+par(mfrow=c(1,2))
+varImpPlot(rf_cat3_all_reduced)
+varImpPlot(rf_cat3_all)
+par(mfrow=c(1,1))
+```
+
+
+## Random forest classification: Predict tolerance class for breeder data
+```{r rf cat3 predict tolerance class for breeder data}
+dim(log_norm_ct_breeder_woNA)
+
+rf_cat3_all_predicted_drym_breeder <- predict(rf_cat3_all, all_data_breeder_woNA)
+summary(rf_cat3_all_predicted_drym_breeder)
+
+confusionMatrix(table(rf_cat3_all_predicted_drym_breeder, all_info_breeder$tol_cat3_fve))
+
+table(all_info_breeder$cultivar, rf_cat3_all_predicted_drym_breeder)
+table(all_info_breeder$cultivar, all_info_breeder$tol_cat3_fve)
+```
+
+
+## Random forest classification: Predict tolerance class for single breeder trials
+```{r rf cat3 predict tolerance class for single breeder trials}
+table( predict(rf_cat3_all, all_data_woNA_norika_2011), all_info_norika_2011$tol_cat3_fve)
+table( predict(rf_cat3_all, all_data_woNA_norika_2012), all_info_norika_2012$tol_cat3_fve)
+
+table( predict(rf_cat3_all, all_data_woNA_petersgroden_2011), all_info_petersgroden_2011$tol_cat3_fve)
+table( predict(rf_cat3_all, all_data_woNA_petersgroden_2012), all_info_petersgroden_2012$tol_cat3_fve)
+
+table( predict(rf_cat3_all, all_data_woNA_windeby_2011), all_info_windeby_2011$tol_cat3_fve)
+table( predict(rf_cat3_all, all_data_woNA_windeby_2012), all_info_windeby_2012$tol_cat3_fve)
+
+# years
+confusionMatrix(table( predict(rf_cat3_all, all_data_woNA_2011), all_info_2011$tol_cat3_fve))
+confusionMatrix(table( predict(rf_cat3_all, all_data_woNA_2012), all_info_2012$tol_cat3_fve))
+
+# location
+table( predict(rf_cat3_all, all_data_woNA_norika), all_info_norika$tol_cat3_fve)
+table( predict(rf_cat3_all, all_data_woNA_petersgroden), all_info_petersgroden$tol_cat3_fve)
+table( predict(rf_cat3_all, all_data_woNA_windeby), all_info_windeby$tol_cat3_fve)
+```
+
+
+# Lasso Model
+## Lasso: Define data
+```{r lasso define data}
+# TEST data
+test_x <- as.matrix(test_data_woNA)
+test_y <- test_info$mdrym_fve
+test_y_cat <- test_info$tol_cat3_fve
+
+# use TRAIN data
+train_x <- as.matrix(train_data_woNA)
+train_y <- train_info$mdrym_fve
+train_y_cat <- train_info$tol_cat3_fve
+
+# use ALL data
+x <- as.matrix(all_data_woNA)
+y <- all_info$mdrym_fve
+y_cat <- all_info$tol_cat3_fve
+```
+
+
+## Lasso: Regression model with ALL data
+```{r lasso reg model with all data}
+set.seed(1)
+lasso_all <- glmnet(x, y)
+
+# Cross-validation
+set.seed(1)
+lasso_cv_all <- cv.glmnet(x, y)
+plot(lasso_cv_all, ylim=c(0, 0.005))
+
+# use no specific lambda
+lasso_all_pred_test <- predict(lasso_all, new = test_x)
+
+# calculate mean error
+lasso_all_pred_test_err <- apply( (lasso_all_pred_test - test_y)^2, 2, mean )
+points(log(lasso_all$lambda), lasso_all_pred_test_err, col="blue", pch="*")
+
+# use optimal lamba value
+lasso_all_pred_all_lambda <- predict(lasso_cv_all, new = x, s="lambda.min")
+lasso_all_pred_test_lambda <- predict(lasso_cv_all, new = test_x, s="lambda.min")
+
+# plot observed vs. predicted DRYM
+plot(y, lasso_all_pred_all_lambda)
+abline(0,1)
+cor.test(y, lasso_all_pred_all_lambda)
+
+sqrt(mean((y - lasso_all_pred_all_lambda)^2))
+```
+
+
+## Lasso Regression: Predict DRYM for breeder data
+```{r lasso reg predict DRYM for breeder data}
+# use optimal lamba value
+lasso_all_pred_breeder <- predict(lasso_cv_all, new = as.matrix(all_data_breeder_woNA), s = "lambda.min")
+
+plot(all_info_breeder$mdrym_fve, lasso_all_pred_breeder, 
+     xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19,
+     xlim = c(-0.18, 0.15), ylim = c(-0.18, 0.15))
+abline(0, 1, col = "red")
+
+cor.test(all_info_breeder$mdrym_fve, lasso_all_pred_breeder)
+sqrt(mean((all_info_breeder$mdrym_fve - lasso_all_pred_breeder)^2))
+
+# Norika 2011/2012
+lasso_all_pred_norika_2011 <- predict(lasso_cv_all, new = as.matrix(all_data_woNA_norika_2011), s = "lambda.min")
+lasso_all_pred_norika_2012 <- predict(lasso_cv_all, new = as.matrix(all_data_woNA_norika_2012), s = "lambda.min")
+
+plot(all_info_norika_2011$mdrym_fve, lasso_all_pred_norika_2011, xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19)
+text(all_info_norika_2011$mdrym_fve, lasso_all_pred_norika_2011, labels = all_info_norika_2011$cultivar, cex = 0.6)
+plot(all_info_norika_2012$mdrym_fve, lasso_all_pred_norika_2012, xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19)
+text(all_info_norika_2012$mdrym_fve, lasso_all_pred_norika_2012, labels = all_info_norika_2012$cultivar, cex = 0.6)
+```
+
+
+## Lasso: Multinomial model with TRAINING data
+A special option for multinomial regression is ``type.multinomial``, which allows the usage of a grouped lasso penalty if ``type.multinomial = "grouped"``. 
+This will ensure that the multinomial coefficients for a variable are all in or out together, just like for the multi-response Gaussian.
+```{r lasso multinomial model with train data}
+set.seed(1)
+lasso_cat_train <- glmnet(train_x, train_y_cat, family = "multinomial")
+
+# Cross-validation
+set.seed(1)
+lasso_cat_cv_train <- cv.glmnet(train_x, train_y_cat, family = "multinomial")
+plot(lasso_cat_cv_train)
+
+# use optimal lamba value
+lasso_cat_train_pred_tain_lambda <- predict(lasso_cat_cv_train, new = train_x, s = "lambda.min", type = "class")
+lasso_cat_train_pred_test_lambda <- predict(lasso_cat_cv_train, new = test_x, s = "lambda.min", type = "class")
+
+# table observed vs. predicted DRYM
+table(train_y_cat, lasso_cat_train_pred_tain_lambda)
+table(test_y_cat, lasso_cat_train_pred_test_lambda)
+```
+
+
+## Lasso: Multinomial model with ALL data
+```{r lasso multinomial model with all data}
+set.seed(1)
+lasso_cat_all <- glmnet(x, y_cat, family = "multinomial")
+
+# Cross-validation
+set.seed(1)
+lasso_cat_cv_all <- cv.glmnet(x, y_cat, family = "multinomial")
+plot(lasso_cat_cv_all)
+
+# use optimal lamba value
+lasso_cat_all_pred_all_lambda <- predict(lasso_cat_cv_all, new = x, s = "lambda.min", type = "class")
+
+# plot observed vs. predicted DRYM
+table(y_cat, lasso_cat_all_pred_all_lambda)
+```
+
+
+## Lasso multinomial model: Predict DRYM for breeder data
+```{r lasso multinomial predict DRYM for breeder data}
+# use optimal lamba value
+lasso_cat_all_pred_breeder <- predict(lasso_cat_cv_all, new = as.matrix(all_data_breeder_woNA), s = "lambda.min", type = "class")
+
+# convert to factor
+lasso_cat_all_pred_breeder_f <- factor(lasso_cat_all_pred_breeder[,1], levels = c("low", "mid", "high"))
+
+table(all_info_breeder$tol_cat3_fve, lasso_cat_all_pred_breeder_f)
+confusionMatrix( table(all_info_breeder$tol_cat3_fve, lasso_cat_all_pred_breeder_f))
+
+
+# Norika 2011/2012
+
+```
+
+# Save workspace and sessionInfo
+```{r save workspace}
+save.image("qpcr_model_field_breeder.RData")
+sessionInfo()
+```
+
