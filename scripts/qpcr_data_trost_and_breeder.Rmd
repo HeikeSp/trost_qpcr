@@ -1,0 +1,249 @@
+---
+title: "Combine qRT-PCR data from TROST trials and Breeder trials"
+author: "Heike Sprenger"
+date: "Wednesday, March 30, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 4
+---
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_data_trost_and_breeder.RData")
+```
+
+
+# Source R functions
+```{r source R functions}
+source("../functions/colors.R")
+source("../functions/names.R")
+source("../functions/func_histograms.R")
+source("../functions/func_prep_pca.R")
+source("../functions/func_pca_plots.R")
+```
+
+
+# Load sample information
+```{r load sample information}
+# TROST samplelist
+samplelist_trost <- read.table("output/trost/samplelist.txt", header=TRUE, sep="\t")
+
+samplelist_trost_part <- samplelist_trost[, c("cultivation", "trial", 
+                                              "sampleID", "aliquotID", "cultivar", 
+                                              "subspecies_id", "treatment")]
+
+levels(samplelist_trost_part$treatment) <- c("control", "drought stress")
+
+
+# breeder samplelist
+samplelist_breeder <- read.table("output/breeder/samplelist.txt", header=TRUE, sep="\t")
+samplelist_breeder$year <- as.factor(samplelist_breeder$year)
+
+samplelist_breeder_part <- samplelist_breeder[, c("location_name", "trial", 
+                                                "sampleID", "aliquotID", "cultivar", 
+                                                "subspecies_id", "year")]
+
+
+# use year (breeder) as equivalent for treatment (TROST)
+# use location_name (breeder) as equivalent for cultivation (TROST)
+colnames(samplelist_breeder_part)[c(1,7)] <- c("cultivation", "treatment")
+
+
+# combine both samplelists
+samplelist_all <- rbind(samplelist_trost_part, samplelist_breeder_part)
+dim(samplelist_all)
+# 559 7
+
+# add column for trost or valdis
+samplelist_all$trost_breeder <- as.factor( c(rep("trost", 356), rep("breeder", 203)))
+
+# save common samplelist for trost and valdis
+write.table(samplelist_all, "output/model/samplelist_trost_breeder.txt", sep="\t")
+```
+
+
+# Load data
+```{r load data}
+# TROST data
+log_norm_ct_trost <- read.table("output/trost/log_norm_ct.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_trost)
+# 356 88
+
+# Breeder data
+log_norm_ct_breeder <- read.table("output/breeder/log_norm_ct.txt", header=TRUE, sep="\t")
+dim(log_norm_ct_breeder)
+# 203 43
+```
+
+
+# Subset of 43 valdis genes
+```{r subset of 43 valdis genes}
+# save colnames in variable
+log_norm_ct_breeder_colnames <- colnames(log_norm_ct_breeder)
+# DMT
+
+# order dataframe by colnames and save colnames in variable
+log_norm_ct_trost_ordered <- log_norm_ct_trost[, order(colnames(log_norm_ct_trost))]
+log_norm_ct_trost_colnames <- colnames(log_norm_ct_trost_ordered)
+# DMT
+
+# index of 42 genes used for trost AND valdis
+overlapping_genes_idx <- which(log_norm_ct_trost_colnames %in% log_norm_ct_breeder_colnames)
+log_norm_ct_subset_trost <- log_norm_ct_trost_ordered[, overlapping_genes_idx]
+write.table(log_norm_ct_subset_trost, "output/model/log_norm_ct_trost_subset_43_genes.txt", sep="\t")
+
+
+dim(log_norm_ct_subset_trost)
+# 356 43
+dim(log_norm_ct_breeder)
+# 203 43
+
+# combine both datasets
+log_norm_ct_all <- rbind(log_norm_ct_subset_trost, log_norm_ct_breeder)
+dim(log_norm_ct_all)
+# 559 43
+
+# save common dataset for trost and valdis
+write.table(log_norm_ct_all, "output/model/log_norm_ct_trost_breeder.txt", sep="\t")
+```
+
+
+# PCA
+```{r PCA}
+log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct_all, scale_method = "pareto", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_none_rnipals <- func_prep_pca(log_norm_ct_all, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct_all, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "ppca")
+
+
+# export completeObs for later use by RandomForest
+write.table(log_norm_ct_none_rnipals@completeObs, "output/model/log_norm_ct_prep_none_rnipals_completeObs_trost_breeder.txt", sep="\t")
+dim(log_norm_ct_none_rnipals@completeObs)
+# 559 samples, 44 genes
+```
+
+
+## PCA plots
+```{r pca plots}
+pdf("figures/model/pca_log_norm_ct_trost_breeder.pdf", width=10, height=10)
+
+# no scaling, rnipals
+# treatment/year
+palette(heike_palette_4)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "treatment", 19, "treatment effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 3, samplelist_all, "treatment", 19, 1, 
+              "bottomright", 0.8, maintext="treatment effect")
+
+
+# trost/breeder samples
+palette(cols_sample_time2)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "trost_breeder", 19, "trost/breeder effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "trost_breeder", 19, 1, 
+              "bottomright", 0.8, maintext="trost/breeder effect")
+
+
+# cultivation/location
+palette(heike_palette_6)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "cultivation", 19, "cultivation effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "cultivation", 19, 1, 
+              "bottomright", 0.8, maintext="cultivation effect")
+
+# trial: 11
+# palette(cols_trial_ordered)
+palette(rainbow(11))
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "trial", 19, "trial effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "trial", 19, 1, 
+              "bottomright", 0.8, maintext="trial effect")
+
+# plot(log_norm_ct_prep_none_rnipals@scores[,1], log_norm_ct_prep_none_rnipals@scores[,2], col=samplelist_all$trial, pch=19)
+# legend("topleft", fill=1:7, c("JKI field 2012", "MPI field 2011", "MPI field 2012", "MPI-MP GH3", "MPI-MP GH5", "JKI Shelter 2014", "MPI-MP FGH 2014"))
+
+# genotype
+palette(rainbow(34))
+
+# 34 distinct colors from: 
+# http://withr.me/blog/2014/06/16/generate-distict-colors/
+palette(c("#77FAD9FF", "#FFC7FFFF", "#A8FD8EFF", "#CF800EFF", "#44E3EEFF", "#7F48EFFF", "#3BEB3CFF", "#9A98FDFF", "#FDA292FF", "#EF46D2FF", "#105FD0FF", "#4BC202FF", "#FAB174FF", "#C0C0C0FF", "#6BBBF8FF", "#B002C0FF", "#A8EF43FF", "#D9FFE4FF", "#05A3C4FF", "#E6D230FF", "#EC693DFF", "#24DFAEFF", "#FBF77BFF", "#C35103FF", "#7003C1FF", "#DC1F31FF", "#C21E03FF", "#1502C1FF", "#FFEEBAFF", "#4461EEFF", "#F8D86AFF", "#C48E03FF", "#44EE89FF", "#C0C0C0FF"))
+
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "cultivar", 19, "genotype effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "cultivar", 19, 1, 
+              "bottomright", 0.5, maintext="genotype effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 4, samplelist_all, "cultivar", 19, 1, 
+              "bottomright", 0.5, maintext="genotype effect")
+
+plot(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,4], col=samplelist_all$cultivar, 
+     pch=c(19,17)[samplelist_all$trost_valdis], cex=0.8, main="genotype effect (symbols: trost/valdis effect)")
+text(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,4], labels=samplelist_all$cultivar, cex=0.5)
+
+dev.off()
+```
+
+
+## PCA for check cultivars
+```{r PCA for check cultivars}
+log_norm_ct_check_cultivars <- subset(log_norm_ct_all, samplelist_all$cultivar %in% check_names)
+samplelist_check_cultivars <- droplevels(subset(samplelist_all, samplelist_all$cultivar %in% check_names))
+
+log_norm_ct_none_rnipals_check_cultivars <- func_prep_pca(log_norm_ct_check_cultivars, scale_method = "none", center_option = FALSE, 
+                                             pc_number = 5, pca_method = "rnipals")
+
+
+pdf("figures/model/pca_log_norm_ct_trost_breeder_check_cultivars.pdf", width=7, height=7)
+palette(cols_cultivar_check)
+func_5pairs_plot(log_norm_ct_none_rnipals_check_cultivars, samplelist_check_cultivars, "cultivar", 19, "cultivar effect")
+func_pca_plot(log_norm_ct_none_rnipals_check_cultivars, 1, 3, samplelist_check_cultivars, "cultivar", 19, 1, 
+              "bottomright", 1, maintext="cultivar effect")
+
+func_pca_plot_sym(pca_res = log_norm_ct_none_rnipals_check_cultivars, dim1 = 1, dim2 = 3, 
+                  factors = samplelist_check_cultivars, color_factor = "cultivar", 
+                  symbols = c(17,19), symbol_factor = "trost_breeder", symbol_size = 1, 
+                  pos1 = "bottomright", leg1 = 1, pos2 = "topright", leg2 = 1,
+                  maintext = "check cultivars", legend.text1 = check_names)
+
+palette(heike_palette_2)
+func_5pairs_plot(log_norm_ct_none_rnipals_check_cultivars, samplelist_check_cultivars, "trost_breeder", 19, "trost/breeder effect")
+func_pca_plot(log_norm_ct_none_rnipals_check_cultivars, 1, 2, samplelist_check_cultivars, "trost_breeder", 19, 1, 
+              "bottomright", 1, maintext="trost/breeder effect")
+dev.off()
+```
+
+
+# Save workspace and sessioninfo
+```{r save workspace}
+save.image("qpcr_data_trost_and_breeder.RData")
+sessionInfo()
+```
+
