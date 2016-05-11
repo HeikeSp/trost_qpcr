@@ -87,6 +87,7 @@ samplelist_field <- droplevels(subset(samplelist_joined, samplelist_joined$culti
 
 # only field data
 log_norm_ct_field <- subset(log_norm_ct, samplelist$cultivation=="field")
+dim(log_norm_ct_field)
 
 # train/test data
 train_data <- droplevels(subset(log_norm_ct_field, samplelist_field$model_set=="train"))
@@ -742,6 +743,78 @@ plot(importance_rf_cat3$cat3_train, importance_rf_cat3$cat3_all, pch=19, cex=1.5
 
 write.table(importance_rf_reg, "output/model/field_importance_rf_reg.txt", sep="\t")
 write.table(importance_rf_cat3, "output/model/field_importance_rf_cat3.txt", sep="\t")
+```
+
+
+## Try RF LOO-CV with single cultivars for test set
+
+* Idea: use 30 of 31 cultivars in training and the remaining for test
+
+```{r try LOO-CV}
+dim(all_data_woNA)
+dim(all_info)
+
+table(all_info$cultivar)
+length(levels(all_info$cultivar))
+
+genotype_levels <- levels(all_info$cultivar)
+
+loocv_rf_accuracy <- rep(NA, 31)
+names(loocv_rf_accuracy) <- genotype_levels
+
+loocv_lasso_accuracy <- loocv_lasso_err <- loocv_rf_err <- loocv_rf_accuracy
+
+
+for (i in genotype_levels){
+  loocv_training_data <- subset(all_data_woNA, !all_info$cultivar == i)
+  loocv_test_data <- subset(all_data_woNA, all_info$cultivar == i)
+  
+  loocv_training_info <- subset(all_info, !all_info$cultivar == i)
+  loocv_test_info <- subset(all_info, all_info$cultivar == i)
+  
+  loocv_input <- data.frame(loocv_training_data, "tol" = loocv_training_info$tol_cat3_fve, check.names = FALSE)
+  loocv_input_reg <- data.frame(loocv_training_data, "tol" = loocv_training_info$mdrym_fve, check.names = FALSE)
+  tol <- match("tol", names(loocv_input)) # i is index of tol column
+
+  # RANDOM FOREST
+  set.seed(1234)
+  loocv_rf <- randomForest(loocv_input[,-tol], loocv_input[,tol], ntree=1000)
+  #table(predict(loocv_rf, loocv_test_data), loocv_test_info$tol_cat3_fve)
+  
+  # save accuracy
+  loocv_rf_accuracy[i] <- confusionMatrix(predict(loocv_rf, loocv_test_data), 
+                                       loocv_test_info$tol_cat3_fve)$overall[1]
+  
+  # RF regression
+  loocv_rf_reg <- randomForest(loocv_input_reg[,-tol], loocv_input_reg[,tol], ntree=1000)
+  predict(loocv_rf_reg, loocv_test_data)
+  loocv_rf_err[i] <- sqrt(mean((loocv_test_info$mdrym_fve - predict(loocv_rf_reg, loocv_test_data))^2))
+  
+  # LASSO
+  loocv_lasso <- cv.glmnet(as.matrix(loocv_training_data), 
+                           loocv_training_info$tol_cat3_fve, family = "multinomial")
+  loocv_lasso_reg <- cv.glmnet(as.matrix(loocv_training_data),
+                               loocv_training_info$mdrym_fve)
+  
+  loocv_lasso_pred <- as.factor(predict(loocv_lasso, new = as.matrix(loocv_test_data), 
+                                        s = "lambda.min", type = "class")[,1])
+  loocv_lasso_reg_pred <- predict(loocv_lasso_reg, new = as.matrix(loocv_test_data), s = "lambda.min")
+  
+  loocv_lasso_accuracy[i] <- confusionMatrix(loocv_lasso_pred, 
+                                             loocv_test_info$tol_cat3_fve)$overall[1]
+  
+  loocv_lasso_err[i] <- sqrt(mean((loocv_test_info$mdrym_fve - loocv_lasso_reg_pred)^2))
+  
+}
+
+loocv_rf_accuracy
+hist(loocv_rf_accuracy)
+
+plot(loocv_lasso_accuracy, loocv_rf_accuracy)
+plot(loocv_lasso_err, loocv_rf_err)
+
+
+
 ```
 
 
