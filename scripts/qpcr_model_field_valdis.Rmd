@@ -572,6 +572,7 @@ lasso_all_predicted_drym_valdis_median_sorted <- lasso_all_predicted_drym_valdis
 # save median of predicted drym
 head(lasso_all_predicted_drym_valdis_median)
 write.table(lasso_all_predicted_drym_valdis_median, "output/model/lasso_all_predicted_drym_valdis_median.txt", sep="\t", row.names=F)
+write.table(lasso_all_predicted_drym_valdis_line, "output/valdis/lasso_all_predicted_drym_valdis.txt", sep="\t", row.names=F)
 
 # sort predicted DRYM values for plot
 lasso_all_predicted_drym_valdis_sorted <- with(lasso_all_predicted_drym_valdis_line, reorder(line, drym, median, na.rm=T))
