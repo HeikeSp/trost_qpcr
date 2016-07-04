@@ -30,6 +30,7 @@ library(corrplot)
 library(gplots)
 library(RColorBrewer)
 
+
 # set options for pander
 panderOptions('table.split.table', 200)
 
@@ -111,8 +112,12 @@ head(samplelist_all)
 # order samplelist by sampleID
 samplelist_all <- samplelist_all[order(samplelist_all$sampleID),]
 
+# use only relevant genotypes (31 cultivars)
+samplelist_model <- droplevels(subset(samplelist_all, samplelist_all$cultivar %in% names_cultivars_31))
+dim(samplelist_model)
+
 # save common samplelist for trost and breeder
-write.table(samplelist_all, "output/model/samplelist_field_breeder.txt", sep="\t")
+write.table(samplelist_model, "output/model/samplelist_field_breeder.txt", sep="\t")
 ```
 
 
@@ -170,25 +175,32 @@ log_norm_ct_all <- log_norm_ct_all[order(rownames(log_norm_ct_all)), ]
 
 sum(is.na(log_norm_ct_all))
 
+# use only relevant genotypes (31 cultivars)
+log_norm_ct_model <- droplevels(subset(log_norm_ct_all, samplelist_all$cultivar %in% names_cultivars_31))
+dim(log_norm_ct_model)
+
 # save common dataset for trost and valdis
-write.table(log_norm_ct_all, "output/model/log_norm_ct_field_breeder.txt", sep = "\t")
+write.table(log_norm_ct_model, "output/model/log_norm_ct_field_breeder.txt", sep = "\t")
 ```
 
 
 # Remove Factors by ANOVA models using R script by Jan Lisec
 ```{r normalize (Remove Factors)}
-levels(samplelist_all$trial)
-levels(samplelist_all$trost_breeder)
-levels(samplelist_all$treatment)
-levels(samplelist_all$cultivar)
+levels(samplelist_model$trial)
+levels(samplelist_model$trost_breeder)
+levels(samplelist_model$treatment)
+levels(samplelist_model$cultivar)
+
+# check correct order:
+all(rownames(log_norm_ct_model)==samplelist_model$sampleID)
 
 # with trial and cultivar
-log_norm_ct_all_2 <- apply(log_norm_ct_all, 2, RemoveFactors, sam = samplelist_all, 
+log_norm_ct_model_2 <- apply(log_norm_ct_model, 2, RemoveFactors, sam = samplelist_model, 
                        facs=c("cultivar", "trial"), 
                        keep=c("cultivar"))
 
 # # with treatment and cultivar
-# log_norm_ct_all_2 <- apply(log_norm_ct_all, 2, RemoveFactors, sam = samplelist_all, 
+# log_norm_ct_model_2 <- apply(log_norm_ct_model, 2, RemoveFactors, sam = samplelist_model, 
 #                        facs=c("cultivar", "treatment"), 
 #                        keep=c("cultivar"))
 ```
@@ -196,8 +208,7 @@ log_norm_ct_all_2 <- apply(log_norm_ct_all, 2, RemoveFactors, sam = samplelist_a
 
 ## Heatmap of normalized expression data
 ```{r Heatmap of normalized expression data}
-heatmap.2(log_norm_ct_all_2,
-          trace = "none")
+heatmap.2(log_norm_ct_model_2, trace = "none")
 ```
 
 
@@ -205,23 +216,23 @@ heatmap.2(log_norm_ct_all_2,
 ## PCA of un-normalized data
 ```{r PCA of un-normalized data}
 
-log_norm_ct_none_rnipals <- func_prep_pca(log_norm_ct_all, 
+log_norm_ct_none_rnipals <- func_prep_pca(log_norm_ct_model, 
                                           scale_method = "none", 
                                           center_option = FALSE, 
                                           pc_number = 5, pca_method = "rnipals")
 
-# log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct_all, scale_method = "pareto", center_option = FALSE, 
+# log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct_model, scale_method = "pareto", center_option = FALSE, 
 #                                              pc_number = 5, pca_method = "rnipals")
 
-# log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct_all, scale_method = "none", center_option = FALSE, 
+# log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct_model, scale_method = "none", center_option = FALSE, 
 #                                              pc_number = 5, pca_method = "ppca")
 
 
-# export completeObs for later use by RandomForest
+# export completeObs for later use by RandomForest and Lasso
 write.table(log_norm_ct_none_rnipals@completeObs,
             "output/model/log_norm_ct_prep_none_rnipals_completeObs_field_breeder.txt", sep = "\t")
 dim(log_norm_ct_none_rnipals@completeObs)
-# 423 samples, 43 genes
+# 387 samples, 43 genes
 ```
 
 
@@ -232,59 +243,49 @@ par(mar=c(4.3, 4.5, 2, 1))
 # no scaling, rnipals
 # treatment/year
 palette(heike_palette_4)
-func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "treatment", 19, "treatment effect")
-func_pca_plot(log_norm_ct_none_rnipals, 1, 3, samplelist_all, "treatment", 19, 1, 
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "treatment", 19, "treatment effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 3, samplelist_model, "treatment", 19, 1, 
               "bottomright", 0.8, maintext="treatment effect")
 
 
 # trost/breeder samples
 palette(cols_sample_time2)
-func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "trost_breeder", 19, "trost/breeder effect")
-func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "trost_breeder", 19, 1, 
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "trost_breeder", 19, "trost/breeder effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "trost_breeder", 19, 1, 
               "bottomright", 0.8, maintext="trost/breeder effect")
 
 
 # cultivation/location
 palette(heike_palette_4)
-func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "cultivation", 19, "cultivation effect")
-func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "cultivation", 19, 1, 
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "cultivation", 19, "cultivation effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "cultivation", 19, 1, 
               "bottomright", 0.8, maintext="cultivation effect")
 
 # trial: 11
 # palette(cols_trial_ordered)
 palette(rainbow(9))
-func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "trial", 19, "trial effect")
-func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "trial", 19, 1, 
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "trial", 19, "trial effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "trial", 19, 1, 
               "bottomright", 0.8, maintext="trial effect")
 
-# plot(log_norm_ct_prep_none_rnipals@scores[,1], log_norm_ct_prep_none_rnipals@scores[,2], col=samplelist_all$trial, pch=19)
+# plot(log_norm_ct_prep_none_rnipals@scores[,1], log_norm_ct_prep_none_rnipals@scores[,2], col=samplelist_model$trial, pch=19)
 # legend("topleft", fill=1:7, c("JKI field 2012", "MPI field 2011", "MPI field 2012", "MPI-MP GH3", "MPI-MP GH5", "JKI Shelter 2014", "MPI-MP FGH 2014"))
 
 # genotype
-palette(rainbow(34))
+# 34 distinct colors from: http://tools.medialab.sciences-po.fr/iwanthue/
+palette(cols_distinct_31)
 
-# 34 distinct colors from: 
-# http://withr.me/blog/2014/06/16/generate-distict-colors/
-# palette(c("#77FAD9FF", "#FFC7FFFF", "#A8FD8EFF", "#CF800EFF", "#44E3EEFF", "#7F48EFFF", "#3BEB3CFF", "#9A98FDFF", "#FDA292FF", "#EF46D2FF", "#105FD0FF", "#4BC202FF", "#FAB174FF", "#C0C0C0FF", "#6BBBF8FF", "#B002C0FF", "#A8EF43FF", "#D9FFE4FF", "#05A3C4FF", "#E6D230FF", "#EC693DFF", "#24DFAEFF", "#FBF77BFF", "#C35103FF", "#7003C1FF", "#DC1F31FF", "#C21E03FF", "#1502C1FF", "#FFEEBAFF", "#4461EEFF", "#F8D86AFF", "#C48E03FF", "#44EE89FF", "#C0C0C0FF"))
-
-# http://tools.medialab.sciences-po.fr/iwanthue/
-palette(c("#D34428", "#7E3E24", "#DD8935", "#A47C3B", "#CFB031", "#7F7563", "#545921", "#A1AD4D", 
-          "#88BE30", "#AAAF7E", "#3F7D29", "#46CC33", "#59C763", "#61AC72", "#3B604A", "#5AC7AB", 
-          "#74AAAD", "#66ADD8", "#415D77", "#728CDA", "#AF9CBB", "#584D8D", "#7C63D5", "#C67FD4", 
-          "#D150E1", "#6A4D57", "#8B357C", "#DA44B4", "#D881AA", "#D54185", "#8E3851", "#CFA295", 
-          "#D53F5A", "#D37765"))
-
-func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_all, "cultivar", 19, "genotype effect")
-func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_all, "cultivar", 19, 1, 
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "cultivar", 19, "genotype effect")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "cultivar", 19, 1, 
               "bottomright", 0.7, maintext="genotype effect")
-func_pca_plot(log_norm_ct_none_rnipals, 1, 4, samplelist_all, "cultivar", 19, 1, 
+func_pca_plot(log_norm_ct_none_rnipals, 1, 4, samplelist_model, "cultivar", 19, 1, 
               "bottomright", 0.7, maintext="genotype effect")
 
 plot(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,2], 
-     col = samplelist_all$cultivar, pch = 19, cex = 0.8, main = "genotype effect",
+     col = samplelist_model$cultivar, pch = 19, cex = 0.8, main = "genotype effect",
      xlab = "PC1", ylab = "PC2")
 text(log_norm_ct_none_rnipals@scores[,1], log_norm_ct_none_rnipals@scores[,2], 
-     labels = samplelist_all$cultivar_short, cex = 0.7)
+     labels = samplelist_model$cultivar_short, cex = 0.7)
 
 dev.off()
 ```
@@ -292,8 +293,8 @@ dev.off()
 
 ## PCA for check cultivars
 ```{r PCA for check cultivars}
-log_norm_ct_check_cultivars <- subset(log_norm_ct_all, samplelist_all$cultivar %in% check_names)
-samplelist_check_cultivars <- droplevels(subset(samplelist_all, samplelist_all$cultivar %in% check_names))
+log_norm_ct_check_cultivars <- subset(log_norm_ct_model, samplelist_model$cultivar %in% check_names)
+samplelist_check_cultivars <- droplevels(subset(samplelist_model, samplelist_model$cultivar %in% check_names))
 
 log_norm_ct_none_rnipals_check_cultivars <- func_prep_pca(log_norm_ct_check_cultivars, scale_method = "none", center_option = FALSE, 
                                              pc_number = 5, pca_method = "rnipals")
@@ -323,7 +324,7 @@ dev.off()
 
 ## PCA of ANOVA-normalized data
 ```{r PCA of ANOVA-normalized data}
-log_norm_ct_2_none_rnipals <- func_prep_pca(log_norm_ct_all_2, 
+log_norm_ct_2_none_rnipals <- func_prep_pca(log_norm_ct_model_2, 
                                             scale_method = "none", 
                                             center_option = FALSE, 
                                             pc_number = 5, pca_method = "rnipals")
@@ -338,38 +339,38 @@ dim(log_norm_ct_2_none_rnipals@completeObs)
 
 
 ## PCA plots of ANOVA-normalized data
-```{r pca plots of ANOVA-normalized data}
+```{r PCA plots of ANOVA-normalized data}
 pdf("figures/model/pca_log_norm_ct_2_field_breeder.pdf", width=7, height=7)
 par(mar=c(4.3, 4.5, 2, 1))
 # no scaling, rnipals
 # treatment/year
 palette(heike_palette_4)
-func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_all, "treatment", 19, "treatment effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "treatment", 19, 1, 
+func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_model, "treatment", 19, "treatment effect")
+func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_model, "treatment", 19, 1, 
               "bottomright", 0.8, maintext="treatment effect")
 
 
 # trost/breeder samples
 palette(cols_sample_time2)
-func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_all, "trost_breeder", 19, "trost/breeder effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "trost_breeder", 19, 1, 
+func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_model, "trost_breeder", 19, "trost/breeder effect")
+func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_model, "trost_breeder", 19, 1, 
               "bottomright", 0.8, maintext="trost/breeder effect")
 
 
 # cultivation/location
 palette(heike_palette_4)
-func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_all, "cultivation", 19, "cultivation effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "cultivation", 19, 1, 
+func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_model, "cultivation", 19, "cultivation effect")
+func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_model, "cultivation", 19, 1, 
               "bottomright", 0.8, maintext="cultivation effect")
 
 # trial: 11
 # palette(cols_trial_ordered)
 palette(rainbow(9))
-func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_all, "trial", 19, "trial effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "trial", 19, 1, 
+func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_model, "trial", 19, "trial effect")
+func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_model, "trial", 19, 1, 
               "bottomright", 0.8, maintext="trial effect")
 
-# plot(log_norm_ct_prep_none_rnipals@scores[,1], log_norm_ct_prep_none_rnipals@scores[,2], col=samplelist_all$trial, pch=19)
+# plot(log_norm_ct_prep_none_rnipals@scores[,1], log_norm_ct_prep_none_rnipals@scores[,2], col=samplelist_model$trial, pch=19)
 # legend("topleft", fill=1:7, c("JKI field 2012", "MPI field 2011", "MPI field 2012", "MPI-MP GH3", "MPI-MP GH5", "JKI Shelter 2014", "MPI-MP FGH 2014"))
 
 # genotype
@@ -381,21 +382,21 @@ palette(c("#D34428", "#7E3E24", "#DD8935", "#A47C3B", "#CFB031", "#7F7563", "#54
           "#D150E1", "#6A4D57", "#8B357C", "#DA44B4", "#D881AA", "#D54185", "#8E3851", "#CFA295", 
           "#D53F5A", "#D37765"))
 
-func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_all, "cultivar", 19, "genotype effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "cultivar", 19, 1, 
+func_5pairs_plot(log_norm_ct_2_none_rnipals, samplelist_model, "cultivar", 19, "genotype effect")
+func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_model, "cultivar", 19, 1, 
               "bottomright", 0.8, maintext="genotype effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 2, 3, samplelist_all, "cultivar", 19, 1, 
+func_pca_plot(log_norm_ct_2_none_rnipals, 2, 3, samplelist_model, "cultivar", 19, 1, 
               "bottomright", 0.8, maintext="genotype effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 4, samplelist_all, "cultivar", 19, 1, 
+func_pca_plot(log_norm_ct_2_none_rnipals, 1, 4, samplelist_model, "cultivar", 19, 1, 
               "bottomright", 0.8, maintext="genotype effect")
-func_pca_plot(log_norm_ct_2_none_rnipals, 4, 5, samplelist_all, "cultivar", 19, 1, 
+func_pca_plot(log_norm_ct_2_none_rnipals, 4, 5, samplelist_model, "cultivar", 19, 1, 
               "bottomright", 0.8, maintext="genotype effect")
 
 plot(log_norm_ct_2_none_rnipals@scores[,1], log_norm_ct_2_none_rnipals@scores[,2], 
-     col = samplelist_all$cultivar, pch = 19, cex = 0.8, main = "genotype effect",
+     col = samplelist_model$cultivar, pch = 19, cex = 0.8, main = "genotype effect",
      xlab = "PC1", ylab = "PC2")
 text(log_norm_ct_2_none_rnipals@scores[,1], log_norm_ct_2_none_rnipals@scores[,2], 
-     labels = samplelist_all$cultivar_short, cex = 0.7)
+     labels = samplelist_model$cultivar_short, cex = 0.7)
 
 dev.off()
 ```
@@ -405,33 +406,27 @@ dev.off()
 ```{r PCA plot for publication}
 pdf("figures/model/pca_for_publication_treatment.pdf", width=7, height=7)
 par(mar=c(4.3, 4.5, 2, 1))
-
 palette(heike_palette_4)
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "treatment", 19, 1, 
-              "bottomright", 1, maintext="treatment effect", 
+
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "treatment", 19, 1, 
+              "topleft", 1, xmin = -6,
               legend.text = c("field: control", "field: drought stress", 
                               "agronomic trials 2011", "agronomic trials 2012"))
 dev.off()
 
 
-
 pdf("figures/model/pca_for_publication_genotype.pdf", width=7, height=7)
 par(mar=c(4.3, 4.5, 2, 1))
-# 34 distinct colors from: http://tools.medialab.sciences-po.fr/iwanthue/
-palette(c("#D34428", "#7E3E24", "#DD8935", "#A47C3B", "#CFB031", "#7F7563", "#545921", "#A1AD4D", 
-          "#88BE30", "#AAAF7E", "#3F7D29", "#46CC33", "#59C763", "#61AC72", "#3B604A", "#5AC7AB", 
-          "#74AAAD", "#66ADD8", "#415D77", "#728CDA", "#AF9CBB", "#584D8D", "#7C63D5", "#C67FD4", 
-          "#D150E1", "#6A4D57", "#8B357C", "#DA44B4", "#D881AA", "#D54185", "#8E3851", "#CFA295", 
-          "#D53F5A", "#D37765"))
+palette(cols_distinct_31)
 
-func_pca_plot(log_norm_ct_2_none_rnipals, 1, 2, samplelist_all, "cultivar", 19, 1,
-              "topleft", 0.8, maintext="genotype effect", xmin = -6)
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "cultivar", 19, 1,
+              "topleft", 0.8, xmin = -7)
 
-func_pca_plot(log_norm_ct_2_none_rnipals, 2, 3, samplelist_all, "cultivar", 19, 1,
-              "topleft", 0.8, maintext="genotype effect", xmin = -3.3)
+func_pca_plot(log_norm_ct_none_rnipals, 2, 3, samplelist_model, "cultivar", 19, 1,
+              "topleft", 0.8, xmin = -3.3)
 
-func_pca_plot(log_norm_ct_2_none_rnipals, 4, 5, samplelist_all, "cultivar", 19, 1, 
-              "topright", 0.8, maintext="genotype effect", xmax = 3.3)
+func_pca_plot(log_norm_ct_none_rnipals, 4, 5, samplelist_model, "cultivar", 19, 1, 
+              "topright", 0.8, xmax = 3.3)
 dev.off()
 ```
 
