@@ -31,16 +31,11 @@ library(ggplot2)
 library(corrplot)
 library(gplots)
 library(RColorBrewer)
-
 library(plyr)
-library(rpart)
 library(randomForest)
-library(partykit)
-library(party)
 library(caret) 
-library(pls)
-library(BioMark)
 library(varSelRF)
+library(glmnet)
 
 # set options for pander
 panderOptions('table.split.table', 200)
@@ -54,43 +49,30 @@ opts_knit$set(root.dir = '../')
 ```
 
 
-# Load Data
-```{r load data}
+# Load Tolerance Data
+```{r load tolerance data}
 tolerance <- read.table("../trost_phenotypes/output/tolerance_phenotyper_metadata_2sub.txt", 
                         sep = "\t", header = TRUE)
 
 # relevel tolerance factors
 tolerance$tol_cat2_fve <- factor(tolerance$tol_cat2_fve, levels = c("low", "high"))
 tolerance$tol_cat3_fve <- factor(tolerance$tol_cat3_fve, levels = c("low","mid", "high"))
+```
 
-##############
 
-# TROST FIELD data (subset of 43 genes!)
-# samplelist_field <- read.table("output/model/samplelist_field.txt", header = T, sep = "\t")
-# dim(samplelist_field)
+# Load qPCR data and samplelist
+* ``log_norm_ct_all`` contains data from 423 samples (TROST Field + Breeder) and 43 genes, **with NAs!**
+* comes from: ``qpcr_data_field_and_breeder.Rmd``
+* ``samplelist_all`` is ordered by sampleID
 
-# --> comes from: "qpcr_data_field_and_breeder.Rmd"
-log_norm_ct_subset_field <- read.table("output/model/log_norm_ct_field_subset_43_genes.txt", header = T, sep = "\t")
-dim(log_norm_ct_subset_field)
-# 220 43
-
-##############
-
-# Breeder data
-# samplelist_breeder <- read.table("output/breeder/samplelist.txt", header = T, sep = "\t")
-# dim(samplelist_breeder)
-log_norm_ct_breeder <- read.table("output/breeder/log_norm_ct.txt", header = T, sep = "\t")
-dim(log_norm_ct_breeder)
-# 203 43
-
-##############
-
-# TROST + Breeder data --> comes from: "qpcr_data_field_and_breeder.Rmd"
+```{r Load qPCR data and samplelist}
+# TROST + Breeder data
 samplelist_all <- read.table("output/model/samplelist_field_breeder.txt", header = T, sep = "\t")
-log_norm_ct_all <- read.table("output/model/log_norm_ct_field_breeder.txt", header = T, sep = "\t")
+# data contains NAs!
+# log_norm_ct_all <- read.table("output/model/log_norm_ct_field_breeder.txt", header = T, sep = "\t")
+
 dim(samplelist_all)
-dim(log_norm_ct_all)
-# 423 43
+# dim(log_norm_ct_all)
 
 head(samplelist_all)
 
@@ -102,8 +84,8 @@ samplelist_breeder <- droplevels(subset(samplelist_all, samplelist_all$trost_bre
 ```
 
 
-## Define TROST training data
-```{r define training data}
+## Define TROST FIELD train/test info
+```{r define TROST FIELD train/test info}
 # join metadata
 head(tolerance)
 head(samplelist_field)
@@ -113,54 +95,34 @@ samplelist_field_joined <- join(samplelist_field, tolerance, by = "subspecies_id
 head(samplelist_field_joined)
 dim(samplelist_field_joined)
 
-# only TROST field data
-dim(log_norm_ct_subset_field)
-
-# train/test data
-train_data <- subset(log_norm_ct_subset_field, samplelist_field_joined$model_set=="train")
-test_data <- subset(log_norm_ct_subset_field, samplelist_field_joined$model_set=="test")
-
 # train/test info
 train_info <- subset(samplelist_field_joined, samplelist_field_joined$model_set=="train")
 test_info <- subset(samplelist_field_joined, samplelist_field_joined$model_set=="test")
-```
 
-
-## Define control data (and meta data)
-```{r define control data}
-# data
-train_data_control <- droplevels(subset(train_data, train_info$treatment == "control"))
-test_data_control <- droplevels(subset(test_data, test_info$treatment == "control"))
-
-# meta data
+# only control samples
 train_info_control <- droplevels(subset(train_info, train_info$treatment == "control"))
 test_info_control <- droplevels(subset(test_info, test_info$treatment == "control"))
 ```
 
 
-## Define all TROST data (without 3 cultivars --> model_set=="NA") and subset of all TROST control samples
-```{r define all data (control)}
+## Define all TROST FIELD sample information (without 3 cultivars --> model_set=="NA") and subset of all TROST FIELD control samples
+```{r define all TROST FIELD sample information (control)}
 # all TROST samples (without NA --> 3 cultivars)
-all_data <- subset(log_norm_ct_subset_field, !samplelist_field_joined$model_set=="NA")
 all_info <- subset (samplelist_field_joined, !samplelist_field_joined$model_set=="NA")
-dim(all_data)
 dim(all_info)
 
 # all TROST control samples (without NA --> 3 cultivars)
-all_data_control <- subset(log_norm_ct_subset_field, 
-                           samplelist_field_joined$treatment=="control" & !samplelist_field_joined$model_set=="NA")
-
 all_info_control <- subset (samplelist_field_joined, 
                             samplelist_field_joined$treatment=="control" & !samplelist_field_joined$model_set=="NA")
 ```
 
 
-
-# Define all Breeder data (without 3 cultivars --> model_set=="NA")
-```{r define all breeder data}
+## Define all Breeder sample information (without 3 cultivars --> model_set=="NA")
+```{r define all breeder sample information}
 samplelist_breeder_joined <- join(samplelist_breeder, tolerance, by="subspecies_id")
 dim(samplelist_breeder_joined)
 
+# all BREEDER samples without NA --> 3 cultivars
 all_info_breeder <- droplevels(subset (samplelist_breeder_joined, !samplelist_breeder_joined$model_set=="NA"))
 dim(all_info_breeder)
 
@@ -183,11 +145,13 @@ all_info_windeby <- subset(all_info_breeder, all_info_breeder$cultivation == "Wi
 ```
 
 
-
 # Load data without NAs from PCA (rnipals, no scaling, completeObs)
 * comes from: ``qpcr_data_field_and_breeder.Rmd``
 
 ## Load data without NAs: TROST FIELD
+* ``log_norm_ct_woNA_all``: rownames contain ordered sampleIDs, colnames are DMT IDs
+* field subset: ``log_norm_ct_trost_field_woNA``
+
 ```{r data without NAs Trost field}
 # un-normalized data
 log_norm_ct_woNA_all <- read.table("output/model/log_norm_ct_prep_none_rnipals_completeObs_field_breeder.txt",
@@ -196,6 +160,7 @@ log_norm_ct_woNA_all <- read.table("output/model/log_norm_ct_prep_none_rnipals_c
 # ANOVA-normalized data
 # log_norm_ct_woNA_all <- read.table("output/model/log_norm_ct_2_prep_none_rnipals_completeObs_field_breeder.txt",
 #                                   header = T, sep = "\t")
+
 dim(log_norm_ct_woNA_all)
 # 423 43
 
@@ -228,6 +193,8 @@ all_data_control_woNA <- subset(log_norm_ct_trost_field_woNA,
 
 
 ## Load data without NAs: Breeder
+* breeder subset: ``log_norm_ct_breeder_woNA``
+
 ```{r data without NAs breeder}
 #### only Breeder data #####
 log_norm_ct_breeder_woNA <- subset(log_norm_ct_woNA_all, samplelist_all$trost_breeder == "breeder")
@@ -285,6 +252,8 @@ sqrt(mean((test_info$mdrym_fve - predict(rf_all, as.data.frame(test_data_woNA)))
 ## Random forest regression: predict DRYM for breeder data
 ```{r rf reg all predict DRYM for breeder data}
 rf_all_pred_breeder <- predict(rf_all, all_data_breeder_woNA)
+rf_all_pred_breeder_2011 <- predict(rf_all, all_data_woNA_2011)
+rf_all_pred_breeder_2012 <- predict(rf_all, all_data_woNA_2012)
 
 plot(all_info_breeder$mdrym_fve, rf_all_pred_breeder, 
      xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19,
@@ -294,6 +263,9 @@ abline(0, 1, col = "red")
 cor.test(all_info_breeder$mdrym_fve, rf_all_pred_breeder)
 sqrt(mean((all_info_breeder$mdrym_fve - rf_all_pred_breeder)^2))
 
+# 2011/12
+cor.test(all_info_2011$mdrym_fve, rf_all_pred_breeder_2011)$estimate # 0.45
+cor.test(all_info_2012$mdrym_fve, rf_all_pred_breeder_2012)$estimate # 0.68
 # Norika 2011/2012
 rf_all_pred_norika_2011 <- predict(rf_all, all_data_woNA_norika_2011)
 rf_all_pred_norika_2012 <- predict(rf_all, all_data_woNA_norika_2012)
@@ -494,6 +466,8 @@ sqrt(mean((y - lasso_all_pred_all_lambda)^2))
 ```{r lasso reg predict DRYM for breeder data}
 # use optimal lamba value
 lasso_all_pred_breeder <- predict(lasso_cv_all, new = as.matrix(all_data_breeder_woNA), s = "lambda.min")
+lasso_all_pred_breeder_2011 <- predict(lasso_cv_all, new = as.matrix(all_data_woNA_2011), s = "lambda.min")
+lasso_all_pred_breeder_2012 <- predict(lasso_cv_all, new = as.matrix(all_data_woNA_2012), s = "lambda.min")
 
 plot(all_info_breeder$mdrym_fve, lasso_all_pred_breeder, 
      xlab = "observed DRYM", ylab = "predicted DRYM", pch = 19,
@@ -502,6 +476,10 @@ abline(0, 1, col = "red")
 
 cor.test(all_info_breeder$mdrym_fve, lasso_all_pred_breeder)
 sqrt(mean((all_info_breeder$mdrym_fve - lasso_all_pred_breeder)^2))
+
+# 2011/12
+cor.test(all_info_2011$mdrym_fve, lasso_all_pred_breeder_2011)$estimate # 0.55
+cor.test(all_info_2012$mdrym_fve, lasso_all_pred_breeder_2012)$estimate # 0.66
 
 # Norika 2011/2012
 lasso_all_pred_norika_2011 <- predict(lasso_cv_all, new = as.matrix(all_data_woNA_norika_2011), s = "lambda.min")
