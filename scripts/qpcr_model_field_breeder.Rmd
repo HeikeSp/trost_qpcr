@@ -39,6 +39,9 @@ library(varSelRF)
 library(glmnet)
 library(mixOmics)
 
+source("../functions/func_get_accuracy.R")
+source("../functions/func_get_subset_breeder.R")
+
 # set options for pander
 panderOptions('table.split.table', 200)
 
@@ -133,9 +136,6 @@ all_breeder_info_2011 <- droplevels( subset(all_breeder_info, all_breeder_info$t
 all_breeder_info_2012 <- droplevels( subset(all_breeder_info, all_breeder_info$treatment == "2012"))
 
 # information for separate trials or combinations
-get_subset_breeder <- function(x = all_breeder_info, trial_name) {
-  return( droplevels( subset(x, x$trial == trial_name) ) ) }
-
 all_info_norika_2011 <- get_subset_breeder(trial_name = "Norika_2011")
 all_info_norika_2012 <- get_subset_breeder(trial_name = "Norika_2012")
 all_info_petersgroden_2011 <- get_subset_breeder(trial_name = "Petersgroden_2011")
@@ -144,9 +144,6 @@ all_info_windeby_2011 <- get_subset_breeder(trial_name = "Windeby_2011")
 all_info_windeby_2012 <- get_subset_breeder(trial_name = "Windeby_2012")
 
 # locations
-get_subset_location <- function(x = all_breeder_info, loc_name) {
-  return( droplevels( subset(x, x$cultivation == loc_name) ) ) }
-
 all_info_norika <- get_subset_location(loc_name = "Norika")
 all_info_petersgroden <- get_subset_location(loc_name = "Petersgroden")
 all_info_windeby <- get_subset_location(loc_name = "Windeby")
@@ -223,9 +220,6 @@ all_breeder_data_2011 <- subset(all_breeder_data, all_breeder_info$treatment == 
 all_breeder_data_2012 <- subset(all_breeder_data, all_breeder_info$treatment == "2012")
 
 # information for separate trials or combinations
-get_subset_breeder2 <- function(x = all_breeder_data, y = all_breeder_info, trial_name) {
-  return( droplevels( subset(x, y$trial == trial_name) ) ) }
-
 all_data_norika_2011 <- get_subset_breeder2(trial_name = "Norika_2011")
 all_data_norika_2012 <- get_subset_breeder2(trial_name = "Norika_2012")
 all_data_petersgroden_2011 <- get_subset_breeder2(trial_name = "Petersgroden_2011")
@@ -426,7 +420,7 @@ set.seed(1)
 rf_cat3_all <- randomForest(tol~. , data=input_cat3_all, ntree=1000)
 print(rf_cat3_all)
 
-#write.table(importance(rf_cat3_all), "output/model/importance_field_rf_cat3_all.txt", sep="\t")
+write.table(importance(rf_cat3_all), "output/model/importance_field_rf_cat3_all.txt", sep="\t")
 varImpPlot(rf_cat3_all)
 #table(all_info$tol_cat3_fve, rf_cat3_all$predicted)
 ```
@@ -438,17 +432,23 @@ set.seed(13)
 rf_cat3_all_cv <- rfcv(all_data, all_info$tol_cat3_fve, step=0.8)
 rf_cat3_all_cv$n.var
 length(rf_cat3_all_cv$n.var)
-# 15
-with(rf_cat3_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2))
+
+
+# plot for publication
+pdf("figures/model/transcripts_rf_cat3_all_cv_for_publication.pdf", width = 5, height = 5)
+par(mar=c(4.3, 4.5, 1, 1))
+with(rf_cat3_all_cv, plot(n.var, error.cv, log="x", type="o", lwd=2, 
+                          xlab = "number of predictors", 
+                          ylab = "5-fold cross-validation error"))
+dev.off()
 ```
 
 
 ### Variable Selection (vs)
 ```{r rf cat3 all VarSel}
 set.seed(1)
-rf_cat3_all_vs <- varSelRF(all_data, all_info$tol_cat3_fve, 
-                           ntree = 500, ntreeIterat = 300, 
-                           vars.drop.frac = 0.2, c.sd=1)
+rf_cat3_all_vs <- varSelRF(all_data, all_info$tol_cat3_fve, ntree = 500, 
+                           ntreeIterat = 300, vars.drop.frac = 0.2, c.sd=1)
 rf_cat3_all_vs
 # 14 transcripts
 
@@ -459,6 +459,45 @@ plot(rf_cat3_all_vs, which=2)
 
 # indices of selected variables
 rf_cat3_all_vs_idx <- which(colnames(all_data) %in% rf_cat3_all_vs$selected.vars)
+```
+
+
+### Variable Selection: Plots for publication
+```{r rf cat3 all VarSel plots}
+x <- rf_cat3_all_vs
+
+pdf("figures/model/transcripts_rf_cat3_all_vs_for_publication.pdf", width = 5, height = 5)
+par(mar=c(4.3, 4.5, 1, 1))
+plot(x$selec.history$Number.Variables, x$selec.history$OOB, 
+     type = "o", log = "x", ylim = c(0, 0.5), cex.lab = 1.2,
+     col = c(rep(1,5), 2, rep(1,8)),
+     pch = c(rep(19,5), 18, rep(19,8)),
+     cex = c(rep(1,5), 1.5, rep(1,8)),
+     xlab = "number of predictors", ylab = "Out of bag (OOB) error rate")
+
+lines(x$selec.history$Number.Variables, 
+      x$selec.history$OOB + 2 * x$selec.history$sd.OOB, lty = 2)
+lines(x$selec.history$Number.Variables,
+      x$selec.history$OOB - 2 * x$selec.history$sd.OOB, lty = 2)
+dev.off()
+
+
+# IMPORTANCE
+rf_cat3_all_imp <- importance(rf_cat3_all)
+head(rf_cat3_all_imp)
+# selected variables
+rf_cat3_all_imp_vs <- rf_cat3_all_imp[rf_cat3_all_vs_idx]
+names(rf_cat3_all_imp_vs) <- rownames(rf_cat3_all_imp)[rf_cat3_all_vs_idx]
+# order by importance
+rf_cat3_all_imp_vs <- rf_cat3_all_imp_vs[order(rf_cat3_all_imp_vs, decreasing = T)]
+
+pdf("figures/model/transcripts_rf_cat3_all_imp_for_publication.pdf", width = 5, height = 5)
+par(mar=c(4.5, 17, 0.5, 0.5))
+barplot(rf_cat3_all_imp_vs[14:1], horiz = T, names = names(rf_cat3_all_imp_vs[14:1]), 
+        las = 2, xaxt = "n", cex.axis = 1.2, cex.names = 1.2)
+axis(1, las = 1)
+title(xlab = "Importance", cex.lab = 1.2, cex.axis = 1)
+dev.off()
 ```
 
 
@@ -511,7 +550,7 @@ confusionMatrix(table(rf_cat3_all_control_predicted_drym_breeder, all_breeder_in
 
 # REDUCED model
 rf_cat3_all_reduced_predicted_drym_breeder <- predict(rf_cat3_all_reduced, all_breeder_data_vs)
-confusionMatrix(table(rf_cat3_all_reduced_predicted_drym_breeder, all_breeder_info$tol_cat3_fve))
+confusionMatrix(table(rf_cat3_all_reduced_predicted_drym_breeder, all_breeder_info$tol_cat3_fve))$overall[1]
 
 # TRAIN data model
 confusionMatrix(table(predict(rf_cat3_train, all_breeder_data), all_breeder_info$tol_cat3_fve))$overall[1]
@@ -542,14 +581,32 @@ table( predict(rf_cat3_all, all_data_petersgroden), all_info_petersgroden$tol_ca
 table( predict(rf_cat3_all, all_data_windeby), all_info_windeby$tol_cat3_fve)
 
 # accuracy for single trials
-confusionMatrix(table( predict(rf_cat3_all, all_data_norika_2011), all_info_norika_2011$tol_cat3_fve))$overall[1]
-confusionMatrix(table( predict(rf_cat3_all, all_data_norika_2012), all_info_norika_2012$tol_cat3_fve))$overall[1]
+breeder_trial_names <- levels(all_breeder_info$trial)
 
-confusionMatrix(table( predict(rf_cat3_all, all_data_petersgroden_2011), all_info_petersgroden_2011$tol_cat3_fve))$overall[1]
-confusionMatrix(table( predict(rf_cat3_all, all_data_petersgroden_2012), all_info_petersgroden_2012$tol_cat3_fve))$overall[1]
+accuracy_single_trials_full <- func_get_accuracy(model = rf_cat3_all, 
+                                            predictors = 1:43, # all transcripts
+                                            trials = breeder_trial_names)
+```
 
-confusionMatrix(table( predict(rf_cat3_all, all_data_windeby_2011), all_info_windeby_2011$tol_cat3_fve))$overall[1]
-confusionMatrix(table( predict(rf_cat3_all, all_data_windeby_2012), all_info_windeby_2012$tol_cat3_fve))$overall[1]
+
+## Random forest classification REDUCED model: Predict tolerance class for single breeder trials
+```{r rf cat3 all reduced predict tolerance class for single breeder trials}
+# years 2011/12
+confusionMatrix(table( predict(rf_cat3_all_reduced, all_breeder_data_2011[,rf_cat3_all_vs_idx]),
+                       all_breeder_info_2011$tol_cat3_fve))$overall[1]
+confusionMatrix(table( predict(rf_cat3_all_reduced, all_breeder_data_2012[,rf_cat3_all_vs_idx]),
+                       all_breeder_info_2012$tol_cat3_fve))$overall[1]
+
+# accuracy for single trials
+accuracy_single_trials_reduced <- func_get_accuracy(model = rf_cat3_all_reduced, 
+                                                    predictors = rf_cat3_all_vs_idx, # subset of transcripts
+                                                    trials = breeder_trial_names)
+
+# combine results of full and reduced model
+accuracy_single_trials <- data.frame(accuracy_single_trials_full, accuracy_single_trials_reduced)
+
+# for publication
+write.table(accuracy_single_trials, "output/model/rf_cat3_all_accuracy_single_breeder_trials.txt", sep = "\t", quote = F)
 ```
 
 

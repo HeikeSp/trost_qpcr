@@ -266,7 +266,7 @@ func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "cultivation", 19, 
 func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "cultivation", 19, 1, 
               "bottomright", 0.8, maintext="cultivation effect")
 
-# trial: 11
+# trial: 9
 # palette(cols_trial_ordered)
 palette(rainbow(9))
 func_5pairs_plot(log_norm_ct_none_rnipals, samplelist_model, "trial", 19, "trial effect")
@@ -443,9 +443,16 @@ cols_trial_9 <- cols_trial_9[-c(7,8)]
 cols_trial_9 <- c(cols_trial_9[1:2], "#064B77", cols_trial_9[3:8])
 palette(cols_trial_9)
 
-func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "trial", 19, 1, 
+# PC1 vs PC2
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "trial", 19, 1,
               "bottomleft", xmin = -7, leg1 = 1.2,
               legend.text = c("F1", "F3", "F4", "A5", "A14", "A6", "A15", "A8", "A9"))
+
+# PC1 vs PC3
+# func_pca_plot(log_norm_ct_none_rnipals, 1, 3, samplelist_model, "trial", 19, 1, 
+#               "bottomleft", xmin = -7, leg1 = 1.2,
+#               legend.text = c("F1", "F3", "F4", "A5", "A14", "A6", "A15", "A8", "A9"))
+
 dev.off()
 
 ```
