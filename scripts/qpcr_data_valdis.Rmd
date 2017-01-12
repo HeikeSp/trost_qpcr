@@ -8,6 +8,7 @@ output:
     number_section: yes
     theme: cerulean
     toc: yes
+    toc_float: true
     toc_depth: 4
 ---
 
@@ -45,6 +46,7 @@ opts_knit$set(root.dir = '../')
 # Source R functions
 ```{r source R functions}
 source("../functions/colors.R")
+source("../functions/names.R")
 source("../functions/func_histograms.R")
 source("../functions/func_prep_pca.R")
 source("../functions/func_pca_plots.R")
@@ -53,49 +55,48 @@ source("../functions/func_pca_plots.R")
 
 # Load sample information and modify them
 ```{r load sample information}
-samplelist <- read.table("input/valdis/samplelist.txt", header=TRUE, sep="\t")
+samplelist_all <- read.table("input/valdis/samplelist.txt", header=TRUE, sep="\t")
 
 # remove 5 samples that could not be measured: 920897, 920922, 922294, 922503, 922554
-samplelist <- samplelist[-which(samplelist$sampleID %in% c(920897, 920922, 922294, 922503, 922554)), ]
+samplelist_all <- samplelist_all[-which(samplelist_all$sampleID %in% c(920897, 920922, 922294, 922503, 922554)), ]
 
 # order samlelist by ID
-samplelist <- samplelist[order(samplelist$sampleID),]
+samplelist_all <- samplelist_all[order(samplelist_all$sampleID),]
 
 # rename levels of trials
-levels(samplelist$trial) <- c("JKI Shelter 2014", "MPI FGH 2014")
+levels(samplelist_all$trial) <- c("JKI Shelter 2014", "MPI FGH 2014")
 
-table(samplelist$machine, samplelist$trial)
-samplelist$machine <- droplevels(samplelist$machine)
-samplelist$sector <- droplevels(samplelist$sector)
-table(samplelist$sector)
+table(samplelist_all$machine, samplelist_all$trial)
+samplelist_all$machine <- droplevels(samplelist_all$machine)
+samplelist_all$sector <- droplevels(samplelist_all$sector)
+table(samplelist_all$sector)
 
-# # add factor cultivation to samplelist
+# # add factor cultivation to samplelist_all
 # cultivation <- rep("field", 356)
-# cultivation[which(samplelist$trial %in% c("mpi_pruef1", "mpi_pruef3"))] <- "pot"
-# samplelist <- cbind(samplelist, cultivation)
-# levels(samplelist$cultivation)
+# cultivation[which(samplelist_all$trial %in% c("mpi_pruef1", "mpi_pruef3"))] <- "pot"
+# samplelist_all <- cbind(samplelist_all, cultivation)
+# levels(samplelist_all$cultivation)
 
-# samplelist$subspecies_id2 <- as.factor(samplelist$subspecies_id)
-# levels(samplelist$subspecies_id2)[1:4] <- c("Desiree", "Alegria", "Milva", "Saturna")
+# samplelist_all$subspecies_id2 <- as.factor(samplelist_all$subspecies_id)
+# levels(samplelist_all$subspecies_id2)[1:4] <- c("Desiree", "Alegria", "Milva", "Saturna")
 
-write.table(samplelist, "output/valdis/samplelist.txt", sep="\t")
+write.table(samplelist_all, "output/valdis/samplelist_all.txt", sep="\t", row.names = F)
 
 # additional column for crossing (general factor for parents)
-samplelist$crossing2 <- samplelist$crossing
-samplelist$crossing[which(samplelist$crossing %in% c("Ramses", "Euroresa", "Albatros"))] <- "Ramses"
-samplelist$crossing <- droplevels(samplelist$crossing)
-levels(samplelist$crossing)[4] <- "parents"
-
-# subset of samplelists for trials
-samplelist_mpi <- droplevels(subset(samplelist, samplelist$trial=="MPI FGH 2014"))
-samplelist_jki <- droplevels(subset(samplelist, samplelist$trial=="JKI Shelter 2014"))
+samplelist_all$crossing2 <- samplelist_all$crossing
+samplelist_all$crossing[which(samplelist_all$crossing %in% c("Ramses", "Euroresa", "Albatros"))] <- "Ramses"
+samplelist_all$crossing <- droplevels(samplelist_all$crossing)
+levels(samplelist_all$crossing)[4] <- "parents"
 ```
 
 
 # Load qpcr raw data (after cleaning) and modify them
 ```{r load data}
-rawdata <- read.table("input/valdis/rawdata.txt", header=TRUE, sep="\t")
+rawdata <- read.table("input/valdis/rawdata.txt", header = T, sep = "\t")
+dim(rawdata)
+head(rawdata)
 
+# remove column 1: order and 3: Primer_name
 rawdata <- rawdata[,-c(1,3)]
 head(rawdata)
 colnames(rawdata) <- c("gene_id", "value", "sample_id")
@@ -103,27 +104,50 @@ colnames(rawdata) <- c("gene_id", "value", "sample_id")
 class(rawdata$value)
 summary(rawdata$value)
 
+# cast values
 rawdata_cast <- cast(rawdata, sample_id ~ gene_id, value="value")
 dim(rawdata_cast)
 # rows: 803 samples
-# columns 48 genes
+# columns 47 genes and sample_ids
 
-rawdata_ct <- rawdata_cast[,2:48]
+# just Ct values
+rawdata_ct_all <- rawdata_cast[,2:48]
+dim(rawdata_ct_all)
+rownames(rawdata_ct_all) <- rawdata_cast$sample_id
+
+# order columns by DMT id
+rawdata_ct_all <- rawdata_ct_all[, order(colnames(rawdata_ct_all))]
+```
+
+## Subset of genotypes that are common in 2014
+```{r subset of genotypes that are common in 2014}
+samplelist <- droplevels(subset(samplelist_all, samplelist_all$name %in% names_lines_2014))
+dim(samplelist)
+length(unique(samplelist$name))
+table(table(samplelist$name))
+table(samplelist$trial)
+table(samplelist$name, samplelist$trial)
+
+write.table(samplelist, "output/valdis/samplelist.txt", sep="\t", row.names = F)
+
+# subset of samplelists for trials
+samplelist_mpi <- droplevels(subset(samplelist, samplelist$trial=="MPI FGH 2014"))
+samplelist_jki <- droplevels(subset(samplelist, samplelist$trial=="JKI Shelter 2014"))
+
+rawdata_ct <- subset(rawdata_ct_all, samplelist_all$name %in% names_lines_2014)
 dim(rawdata_ct)
-rownames(rawdata_ct) <- rawdata_cast$sample_id
+```
 
-# order by DMT id
-rawdata_ct <- rawdata_ct[, order(colnames(rawdata_ct))]
-
-# values without HK genes 
+## Values without HK genes 
+```{r values without HK genes }
 HK_index <- which(colnames(rawdata_ct) %in% c("PGSC0003DMT400030611", 
                                               "PGSC0003DMT400068117", 
                                               "PGSC0003DMT400037585", 
                                               "PGSC0003DMT400080569"))
 
-rawdata_ct_woHK <-rawdata_ct[,-HK_index]
+rawdata_ct_woHK <- rawdata_ct[,-HK_index]
 dim(rawdata_ct_woHK)
-# 803 samples, 43 genes
+# 779 samples, 43 genes
 ```
 
 
@@ -141,15 +165,15 @@ boxplot(rawdata_ct[,c(15,22,36,42)], las=2)
 pairs(rawdata_ct[,c(15,22,36,42)])
 plot(rawdata_ct[,36], rawdata_ct[,15])
 #identify(rawdata_ct[,36], rawdata_ct[,15])
-rawdata_ct[639,]
+rawdata_ct[48,]
 
 plot(rawdata_ct[,22], rawdata_ct[,36])
 #identify(rawdata_ct[,22], rawdata_ct[,36])
-# 50
-rawdata_ct[50,]
+# 48
+rawdata_ct[48,]
 
-# replace outlier for sample 920913 (line 50) by NA regarding HKG9 (PGSC0003DMT400068117, column 36)
-rawdata_ct[50,36] <- NA
+# replace outlier for sample 920913 (line 48) by NA regarding HKG9 (PGSC0003DMT400068117, column 36)
+rawdata_ct[48,36] <- NA
 
 # histogram of ct-values per gene
 pdf("figures/valdis/hist_rawdata_ct.pdf")
@@ -211,7 +235,7 @@ dev.off()
 
 ## Histograms: MPI trial
 ```{r histograms: MPI trial}
-rawdata_ct_woHK_mpi <- as.data.frame(rawdata_ct_woHK[1:410,])
+rawdata_ct_woHK_mpi <- as.data.frame(rawdata_ct_woHK[1:396,])
 rawdata_ct_woHK_mpi$trial <- samplelist_mpi$trial
 rawdata_ct_woHK_mpi$treatment <- samplelist_mpi$treatment
 rawdata_ct_woHK_mpi$crossing <- samplelist_mpi$crossing2
@@ -247,7 +271,7 @@ dev.off()
 
 # Histograms: JKI trial
 ```{r histograms: JKI trial}
-rawdata_ct_woHK_jki <- as.data.frame(rawdata_ct_woHK[411:803,])
+rawdata_ct_woHK_jki <- as.data.frame(rawdata_ct_woHK[397:779,])
 rawdata_ct_woHK_jki$trial <- samplelist_jki$trial
 rawdata_ct_woHK_jki$treatment <- samplelist_jki$treatment
 rawdata_ct_woHK_jki$crossing <- samplelist_jki$crossing
@@ -332,10 +356,10 @@ par(mfrow=c(1,2))
 par(mar=c(15,4,4,2))
 
 # only MPI
-boxplot(rawdata_ct[1:410,c(15,22,36,42)], las=2, main="only MPI samples", ylim=c(19,30), ylab="Ct value")
+boxplot(rawdata_ct[1:396,c(15,22,36,42)], las=2, main="only MPI samples", ylim=c(19,30), ylab="Ct value")
 abline(h=25, col="grey", lwd=2, lty=2)
 # only JKI
-boxplot(rawdata_ct[411:803,c(15,22,36,42)], las=2, main="only JKI samples", ylim=c(19,30), ylab="Ct value")
+boxplot(rawdata_ct[397:779,c(15,22,36,42)], las=2, main="only JKI samples", ylim=c(19,30), ylab="Ct value")
 abline(h=25, col="grey", lwd=2, lty=2)
 
 # by treatment
@@ -468,13 +492,16 @@ dim(log_norm_ct)
 
 # remove column 9 due to high number of Ct = 40
 log_norm_ct_cleaned <- log_norm_ct[,-9]
-
-write.table(log_norm_ct, "output/valdis/log_norm_ct.txt", sep="\t")
-write.table(log_norm_ct_cleaned, "output/valdis/log_norm_ct_cleaned.txt", sep="\t")
+dim(log_norm_ct_cleaned)
 
 log2_norm_ct <- log2(two_minus_delta_ct)
 log2_norm_ct[1:5,1:5]
 two_minus_delta_ct[1:5,1:5]
+
+write.table(two_minus_delta_ct, "output/valdis/two_minus_delta_ct.txt", sep = "\t", col.names = NA)
+write.table(log_norm_ct, "output/valdis/log_norm_ct.txt", sep = "\t", col.names = NA)
+write.table(log2_norm_ct, "output/valdis/log2_norm_ct.txt", sep = "\t", col.names = NA)
+write.table(log_norm_ct_cleaned, "output/valdis/log_norm_ct_cleaned.txt", sep = "\t", col.names = NA)
 ```
 
 
@@ -551,6 +578,8 @@ func_pca_plot(log_norm_ct_prep_pareto_rnipals, 1, 3, samplelist, "crossing2", 19
 func_pca_plot(log_norm_ct_prep_pareto_rnipals, 2, 3, samplelist, "crossing2", 19, 1.5, "topleft", 0.8)
 
 # pairs(log_norm_ct_prep_pareto_rnipals@scores[,1:5], col=samplelist$crossing, pch=19)
+
+
 
 dev.off()
 ```

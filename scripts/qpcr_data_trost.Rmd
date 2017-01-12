@@ -176,12 +176,15 @@ hist(log_norm_ct, col="grey", breaks=50)
 # low values correpond to low expression in comparison to HK genes (e.g. CT 40)
 # high values correpond to high expression in comparison to HK genes (e.g. CT 20)
 
-write.table(log_norm_ct, "output/trost/log_norm_ct.txt", sep="\t")
-
 # log 2 transformation
 log2_norm_ct <- log2(two_minus_delta_ct)
 log2_norm_ct[1:5,1:5]
 two_minus_delta_ct[1:5,1:5]
+
+# export expression data
+write.table(two_minus_delta_ct, "output/trost/two_minus_delta_ct.txt", sep="\t")
+write.table(log_norm_ct, "output/trost/log_norm_ct.txt", sep="\t")
+write.table(log2_norm_ct, "output/trost/log2_norm_ct.txt", sep="\t")
 ```
 
 

@@ -1,0 +1,413 @@
+---
+title: "Analysis of qRT-PCR data for identification of housekeeping genes"
+author: "Heike Sprenger"
+date: "November 15, 2016"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_float: true
+    toc_depth: 4
+---
+
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_housekeeping_genes.RData")
+```
+
+
+# Source R functions
+```{r source R functions}
+source("../functions/colors.R")
+source("../functions/names.R")
+source("../functions/func_anova.R")
+```
+
+
+# Load functional annotation
+```{r load functional annotation}
+assoc_pgsc <- read.table("../trost_transcriptomics/data/PGSC_DM_v3.4_g2t2c2p2func_edit.txt", sep="\t")
+colnames(assoc_pgsc) <- c("pgsc_dmg", "pgsc_dmt", "pgsc_dmc", "pgsc_dmp", "func")
+head(assoc_pgsc)
+```
+
+
+# RNA-Seq Data & Samplelist
+## Load samplelist
+```{r load samplelist}
+samplelist <- read.table("../trost_transcriptomics/data/samplelist.txt", header=TRUE, sep = "\t")
+
+# new ordering!
+samplelist_ordered <- samplelist[with(samplelist, order(trial_number, condition, cultivar)),]
+head(samplelist_ordered)
+
+# rename and reorder cultivars
+levels(samplelist_ordered$cultivar) <- c("Alegria", "Desiree", "Milva", "Saturna")
+samplelist_ordered$cultivar <- factor(samplelist_ordered$cultivar, levels=c("Alegria", "Milva", "Desiree", "Saturna"))
+
+# rename conditions
+levels(samplelist_ordered$condition) <- c("control", "drought stress")
+
+# samplelist subset for greenhouse/field
+samplelist_greenhouse <- subset(samplelist_ordered, samplelist_ordered$cultivation == "greenhouse")
+samplelist_field <- subset(samplelist_ordered, samplelist_ordered$cultivation == "field")
+
+# droplevels is used to drop unused levels from a factor or, more commonly, from factors in a data frame.
+samplelist_greenhouse <- droplevels(samplelist_greenhouse) 
+samplelist_field <- droplevels(samplelist_field)
+
+head(samplelist_ordered)
+```
+
+
+## Modify sample list
+```{r modify sample list}
+interaction(samplelist_ordered$cultivar, samplelist_ordered$condition)
+interaction(samplelist_ordered$cultivation, samplelist_ordered$condition)
+
+trial <- c(rep("field_1",8), rep("greenhouse_1",8), rep("greenhouse_2",8), rep("greenhouse_3",8), rep("field_2",8), rep("field_3",8))  
+
+samplelist_ordered <- cbind(samplelist_ordered, trial, interaction(samplelist_ordered$cultivar, samplelist_ordered$condition), interaction(samplelist_ordered$cultivation, samplelist_ordered$condition))
+
+colnames(samplelist_ordered) <- c("sample_number", "sample_name", "trial_number", "trial_name", "cultivation", "cultivar", "condition", "tolerance","libsize_raw", "libsize_mapped", "trial", "cultivar_condition","cultivation_condition")
+
+head(samplelist_ordered)
+
+samplelist_ordered$trial <- as.factor(samplelist_ordered$trial)
+class(samplelist_ordered$trial)
+levels(samplelist_ordered$trial)
+
+# relevel trial_name
+levels(samplelist_ordered$trial_name)
+samplelist_ordered$trial_name <- factor(samplelist_ordered$trial_name, 
+                                        levels=c("JKI-GWH1", "MPITest1.2", "MPITest2", 
+                                                 "JKIFeld2012", "MPIFeld2011", "MPIFeld2012") )
+
+levels(samplelist_ordered$cultivar_condition)
+levels(samplelist_ordered$cultivation_condition)
+
+write.table(samplelist_ordered, "output/rnaseq_samplelist_ordered.txt", sep="\t")
+```
+
+
+## Load expected counts data (per gene)
+```{r load expected counts data}
+# exp_counts_genes <- read.table("../trost_transcriptomics/data/genes_expCounts.tsv", 
+# header = TRUE, sep = "\t", row.names = 1)
+```
+
+
+## Load FPKM data (per gene)
+```{r load FPKM data}
+# fpkm_genes <- read.table("../trost_transcriptomics/data/genes_FPKMs.txt", 
+#                          header = T, sep = "\t", row.names = 1)
+# dim(fpkm_genes)
+
+# remove genes where maximal FPKM value is < 1 (from Overview.Rmd)
+fpkm_genes_filtered <- read.table("../trost_transcriptomics/output/fpkm_genes_filtered.txt", 
+                                  sep = "\t", header = T)
+dim(fpkm_genes_filtered)
+# 26277 48
+
+fpkm_genes_filtered_mean <- apply(fpkm_genes_filtered, 1, mean) # calculate row mean
+fpkm_genes_filtered_max <- apply(fpkm_genes_filtered, 1, max) # calculate row max
+fpkm_genes_filtered_sums <- apply(fpkm_genes_filtered, 1, sum) # calculate row sums
+fpkm_genes_filtered_var <- apply(fpkm_genes_filtered, 1, var) # calculate row sums
+summary(fpkm_genes_filtered_var)
+```
+
+
+# Select genes with mean FPKM between 5 and 45
+```{r genes with mean between 5 and 45}
+#length(which(fpkm_genes_filtered_mean<45 & fpkm_genes_filtered_mean>5 & fpkm_genes_filtered_var < 60))
+#cand_dmg <-rownames(fpkm_genes_filtered)[which(fpkm_genes_filtered_mean<45 & fpkm_genes_filtered_mean>5 & fpkm_genes_filtered_var < 60)]
+
+length(which(fpkm_genes_filtered_mean < 45 & fpkm_genes_filtered_mean > 5))
+# 10375
+
+cand_dmg <- rownames(fpkm_genes_filtered)[which(fpkm_genes_filtered_mean < 45 & fpkm_genes_filtered_mean > 5)]
+head(cand_dmg)
+
+fpkm_cand_genes_mean <- apply(fpkm_genes_filtered[cand_dmg,], 1, mean)
+fpkm_cand_genes_var <- apply(fpkm_genes_filtered[cand_dmg,], 1, var)
+plot(log2(fpkm_cand_genes_mean), log2(fpkm_cand_genes_var), pch=19, cex=1, col="black")
+```
+
+
+# Define 15/18 selected housekeeping genes
+```{r 15/18 selected housekeeping genes}
+hk_dmg <- c("PGSC0003DMG400019597","PGSC0003DMG400011723","PGSC0003DMG400011415","PGSC0003DMG400026492","PGSC0003DMG400008443","PGSC0003DMG400030171","PGSC0003DMG400018261","PGSC0003DMG400014497","PGSC0003DMG402016396","PGSC0003DMG400018525","PGSC0003DMG400023077","PGSC0003DMG400031374","PGSC0003DMG400018524","PGSC0003DMG400020320","PGSC0003DMG400020098","PGSC0003DMG402010480","PGSC0003DMG400015761","PGSC0003DMG400003762")
+
+hk_dmg_final <- c("PGSC0003DMG400019597","PGSC0003DMG400011723","PGSC0003DMG400011415","PGSC0003DMG400026492","PGSC0003DMG400008443","PGSC0003DMG400030171","PGSC0003DMG400018261","PGSC0003DMG400014497","PGSC0003DMG402016396","PGSC0003DMG400018525","PGSC0003DMG400023077","PGSC0003DMG400031374","PGSC0003DMG400018524","PGSC0003DMG400020320","PGSC0003DMG400020098")
+
+hk_number <- c("3","4","5","9","11","17","25","27","30","31","47","50","55","66","68","16","40","65")
+hk_number_final <- c("3","4","5","9","11","17","25","27","30","31","47","50","55","66","68")
+
+hk_dmg_mean <- apply(fpkm_genes_filtered[hk_dmg_final,],1,mean)
+hk_dmg_var <- apply(fpkm_genes_filtered[hk_dmg_final,],1,var)
+
+plot(hk_dmg_mean, hk_dmg_var, pch=19, cex=1.5, col="red")
+```
+
+
+# Plot mean vs variance
+```{r plot mean vs variance}
+borders <- c(5,10,15,20,25,30,35,40,45)
+
+#pdf("figures/housekeeping_genes/hk_selection_mean_var.pdf", width = 6, height = 6)
+
+# for phd-thesis and publication
+#pdf("../../../../Doktorarbeit/figures/hk_selection_mean_var2.pdf", width=6, height=6)
+pdf("../../TROST/Manuskripte/tba_2/figures/hk_selection_mean_var.pdf", width = 6, height = 6)
+
+par(mar = c(4.5, 4.5, 4, 0.5))
+plot(log2(fpkm_cand_genes_mean), log2(fpkm_cand_genes_var),
+      pch = 21, cex = 0.7, cex.axis = 1.2, cex.lab = 1.5,
+      bg = rgb(0.75, 0.75, 0.75, 0.3), col = "darkgrey",
+      ylab = bquote(log[2] ~ "FPKM variance"),
+      xlab = bquote(log[2] ~ "FPKM mean"))
+abline(v = log2(borders))
+axis(3, log2(borders), labels = borders, cex.axis = 1.2) 
+points(log2(hk_dmg_mean), log2(hk_dmg_var), pch=19, cex=1.3, col="red")
+mtext("FPKM mean", 3, line = 2, cex = 1.5)
+
+dev.off()
+```
+
+
+# qPCR data of housekeeping genes (CT values)
+## Test of 15 candidates (without no. 16, 40 and 65) in 136 samples (field/GH, control/stress, all 34 cultivars)
+```{r ct values housekeeping genes test experiment}
+# load data
+hk_test <- read.table("input/housekeeping_genes/hk_test_exp_ct_values.txt", sep="\t", header=T, check.names=F)
+dim(hk_test)
+head(hk_test)
+
+# sample information
+hk_test_meta <- hk_test[, c(1:4)]
+
+# CT values for 15 tested candidate genes
+hk_test_ct <- hk_test[, c(5:19)]
+# order columns
+hk_test_ct_ordered <- hk_test_ct[,order(as.integer(colnames(hk_test_ct)))]
+
+# replace high CT values by NA
+length(which(hk_test_ct_ordered > 33))
+hk_test_ct_ordered[hk_test_ct_ordered > 33] <- NA
+```
+
+
+## Selected data for specific cultivars
+### CT values only for check cultivars
+```{r ct values only for check cultivars}
+check_cultivars <- which(hk_test_meta$Cultivar %in% check_names)
+class(check_cultivars)
+
+hk_test_ct_ordered_check_cultivars <- hk_test_ct_ordered[check_cultivars, ]
+hk_test_meta_check_cultivars <- hk_test_meta[check_cultivars, ]
+
+hk_test_ct_ordered_check_cultivars_mean <- apply(hk_test_ct_ordered_check_cultivars, 2, mean, na.rm=T)
+hk_test_ct_ordered_mean <- apply(hk_test_ct_ordered, 2, mean, na.rm=T)
+```
+
+
+### CT values only for 31 selected cultivars
+```{r ct values only for 31 selected cultivars}
+selected_cultivars_31 <- which(hk_test_meta$Cultivar %in% names_cultivars_31)
+class(selected_cultivars_31)
+
+hk_test_ct_ordered_cultivars_31 <- hk_test_ct_ordered[selected_cultivars_31, ]
+hk_test_meta_cultivars_31 <- hk_test_meta[selected_cultivars_31, ]
+
+hk_test_ct_ordered_cultivars_31_mean <- apply(hk_test_ct_ordered_cultivars_31, 2, mean, na.rm=T)
+```
+
+
+## Boxplot of CT values for 15 housekeeping genes
+### Boxplot of CT values for 15 housekeeping genes for ALL cultivars
+```{r boxplot of ct values ALL cultivars}
+color_val <- rep("white",15)
+color_val[c(2,4,8,12)] <- "grey"
+boxplot(hk_test_ct_ordered, col = color_val)
+boxplot(hk_test_ct_ordered_check_cultivars, col = color_val)
+
+# pdf("figures/housekeeping_genes/hk_selection_ct.pdf", width=6.5, height=5)
+
+# for phd-thesis and publication
+#pdf("../../../../Doktorarbeit/figures/hk_selection_ct.pdf", width=7, height=6)
+pdf("../../TROST/Manuskripte/tba_2/figures/hk_selection_ct.pdf", width = 7, height = 6)
+
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+boxplot(hk_test_ct_ordered, col = color_val, ylab = "Ct value", 
+        cex.axis = 1, cex.lab = 1.5, xlab = "reference gene candidate", yaxt = "n")
+axis(2, cex.axis = 1.2)
+dev.off()
+```
+
+
+### Boxplot of CT values for 15 housekeeping genes for 31 selected cultivars
+```{r boxplot of ct values 31 selected cultivars}
+color_val <- rep("white",15)
+color_val[c(2,4,8,12)] <- "grey"
+boxplot(hk_test_ct_ordered, col = color_val)
+boxplot(hk_test_ct_ordered_cultivars_31, col = color_val)
+
+#pdf("figures/housekeeping_genes/hk_selection_ct_31_cultivars.pdf", width=6.5, height=5)
+
+# for publication
+pdf("../../TROST/Manuskripte/tba_2/figures/hk_selection_ct_31_cultivars.pdf", width = 7, height = 6)
+
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+boxplot(hk_test_ct_ordered_cultivars_31, col = color_val, ylab = "Ct value", 
+        cex.axis = 1, cex.lab = 1.5, xlab = "reference gene candidate", yaxt = "n")
+axis(2, cex.axis = 1.2)
+dev.off()
+```
+
+
+## Calculate normalized CT values (relative to mean)
+```{r calculate normalized CT values (relative to mean)}
+# all cultivars
+hk_test_ct_ordered_norm <- hk_test_ct_ordered
+for (i in 1:15) {
+  hk_test_ct_ordered_norm[,i] <- hk_test_ct_ordered[,i] / hk_test_ct_ordered_mean[i]
+  }
+
+# only check cultivars
+hk_test_ct_ordered_check_cultivars_norm <- hk_test_ct_ordered_check_cultivars
+for (i in 1:15) {
+  hk_test_ct_ordered_check_cultivars_norm[,i] <- 
+    hk_test_ct_ordered_check_cultivars[,i] / hk_test_ct_ordered_check_cultivars_mean[i]
+  }
+
+boxplot(hk_test_ct_ordered_norm, col = color_val)
+boxplot(hk_test_ct_ordered_check_cultivars_norm, col = color_val)
+```
+
+
+# Plot CT vs. FPKM for check cultivars
+```{r plot CT vs. FPKM for check cultivars}
+fit_check_cultivars <- lm(hk_test_ct_ordered_check_cultivars_mean ~ log2(hk_dmg_mean))
+fit_all_cultivars <- lm(hk_test_ct_ordered_mean ~ log2(hk_dmg_mean))
+
+cor.test(hk_test_ct_ordered_check_cultivars_mean, log2(hk_dmg_mean))
+cor.test(hk_test_ct_ordered_mean, log2(hk_dmg_mean))
+
+plot(log2(hk_dmg_mean), hk_test_ct_ordered_check_cultivars_mean, 
+     pch = 19, cex = 1.5, col = "blue", ylim = c(23,29))
+points(log2(hk_dmg_mean), hk_test_ct_ordered_mean, 
+       pch = 19, cex = 1.5, col = "red")
+abline(fit_check_cultivars, col = "blue")
+abline(fit_all_cultivars, col = "red")
+legend("topright", fill = c("blue", "red"), legend = c("check cultivars", "all cultivars"))
+```
+
+
+# Calculate Coefficient of variation (CV)
+```{r calculate coefficient of variation (CV)}
+# calculate CV
+Cv <- function (x) { sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE) } 
+
+hk_test_ct_ordered_cv <- apply(hk_test_ct_ordered, 2, Cv)
+hk_test_ct_ordered_cultivars_31_cv <- apply(hk_test_ct_ordered_cultivars_31, 2, Cv)
+
+# hk_test_ct_ordered_mean <- apply(hk_test_ct_ordered, 2, mean, na.rm=T)
+# hk_test_ct_ordered_var <- apply(hk_test_ct_ordered, 2, var, na.rm=T)
+# hk_test_ct_ordered_sd <- apply(hk_test_ct_ordered, 2, sd, na.rm=T)
+
+hk_test_ct_ordered_cv
+barplot(hk_test_ct_ordered_cv, col=color_val)
+write.table(hk_test_ct_ordered_cv, "output/housekeeping_genes/hk_test_ct_ordered_cv.txt", sep = "\t")
+
+
+# final result for publication (with 31 cultivars)
+hk_test_ct_ordered_cultivars_31_cv
+barplot(hk_test_ct_ordered_cultivars_31_cv, col=color_val)
+write.table(hk_test_ct_ordered_cultivars_31_cv, "output/housekeeping_genes/hk_test_ct_ordered_cultivars_31_cv.txt", sep = "\t")
+```
+
+
+# ANOVA of CT values
+## ANOVA of CT values for ALL cultivars
+```{r ANOVA of CT values for ALL cultivars}
+dim(hk_test_meta)
+dim(hk_test_ct_ordered)
+colnames(hk_test_ct_ordered)
+
+anova_res <- func_anova_3fac(hk_test_ct_ordered, hk_test_meta, "cultivation", "Cultivar", "Treatment", 
+                             threshold = 0.01, analyte_names = hk_number_final)
+
+anova_res
+write.table(anova_res, "output/housekeeping_genes/anova_res.txt", sep = "\t")
+
+# ANOVA for 3 single factors separately
+anova_res_cultivation <- func_anova_1fac(hk_test_ct_ordered, hk_test_meta, "cultivation", 
+                                         threshold = 0.01, analyte_names = hk_number_final)
+anova_res_cultivar <- func_anova_1fac(hk_test_ct_ordered, hk_test_meta, "Cultivar", 
+                                      threshold = 0.01, analyte_names = hk_number_final)
+anova_res_treatment <- func_anova_1fac(hk_test_ct_ordered, hk_test_meta, "Treatment", 
+                                       threshold = 0.01, analyte_names = hk_number_final)
+```
+
+
+## ANOVA of CT values for 31 selected cultivars
+```{r ANOVA of CT values for 31 selected cultivars}
+dim(hk_test_meta_cultivars_31)
+dim(hk_test_ct_ordered_cultivars_31)
+colnames(hk_test_ct_ordered_cultivars_31)
+
+anova_res_31_cultivars <- func_anova_3fac(hk_test_ct_ordered_cultivars_31, hk_test_meta_cultivars_31, 
+                             "cultivation", "Cultivar", "Treatment", 
+                             threshold = 0.01, analyte_names = hk_number_final)
+
+anova_res_31_cultivars
+
+write.table(anova_res_31_cultivars, "output/housekeeping_genes/anova_res_31_cultivars.txt", sep = "\t")
+
+# ANOVA for 3 single factors separately
+anova_res_31_cultivars_cultivation <- func_anova_1fac(hk_test_ct_ordered_cultivars_31, 
+                                                      hk_test_meta_cultivars_31, "cultivation", 
+                                                      threshold = 0.01, analyte_names = hk_number_final)
+anova_res_31_cultivars_cultivar <- func_anova_1fac(hk_test_ct_ordered_cultivars_31, 
+                                                   hk_test_meta_cultivars_31, "Cultivar", 
+                                                   threshold = 0.01, analyte_names = hk_number_final)
+anova_res_31_cultivars_treatment <- func_anova_1fac(hk_test_ct_ordered_cultivars_31, 
+                                                    hk_test_meta_cultivars_31, "Treatment", 
+                                                    threshold = 0.01, analyte_names = hk_number_final)
+```
+
+
+# Save workspace & SessionInfo
+```{r save workspace}
+save.image("qpcr_housekeeping_genes.RData")
+sessionInfo()
+```
+
