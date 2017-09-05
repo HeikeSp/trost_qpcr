@@ -181,6 +181,8 @@ sum(is.na(log_norm_ct_all))
 log_norm_ct_model <- droplevels(subset(log_norm_ct_all, samplelist_all$cultivar %in% names_cultivars_31))
 dim(log_norm_ct_model)
 
+sum(is.na(log_norm_ct_model))
+
 # save common dataset for trost and valdis
 write.table(log_norm_ct_model, "output/model/log_norm_ct_field_breeder.txt", sep = "\t")
 ```
@@ -415,7 +417,7 @@ cols_trial_4_new <- c("#023fa5","#8e063b","#11c638","#ef9708") # darkblue red gr
 palette(cols_trial_4_new)
 
 func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist_model, "treatment", 19, 1, 
-              "topleft", 1, xmin = -8,
+              "topleft", 1.4, xmin = -8, ymax = 5,
               legend.text = c("experimental field trials: control", 
                               "experimental field trials: drought stress", 
                               "agronomic field trials 2011", 

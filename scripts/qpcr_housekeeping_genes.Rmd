@@ -259,16 +259,19 @@ color_val[c(2,4,8,12)] <- "grey"
 boxplot(hk_test_ct_ordered, col = color_val)
 boxplot(hk_test_ct_ordered_check_cultivars, col = color_val)
 
-# pdf("figures/housekeeping_genes/hk_selection_ct.pdf", width=6.5, height=5)
+pdf("figures/housekeeping_genes/hk_selection_ct.pdf", width=7, height=6)
 
 # for phd-thesis and publication
 #pdf("../../../../Doktorarbeit/figures/hk_selection_ct.pdf", width=7, height=6)
-pdf("../../TROST/Manuskripte/tba_2/figures/hk_selection_ct.pdf", width = 7, height = 6)
+#pdf("../../TROST/Manuskripte/tba_2/figures/hk_selection_ct.pdf", width = 7, height = 6)
 
 par(mar=c(4.5, 4.5, 0.5, 0.5))
 boxplot(hk_test_ct_ordered, col = color_val, ylab = "Ct value", 
-        cex.axis = 1, cex.lab = 1.5, xlab = "reference gene candidate", yaxt = "n")
+        cex.axis = 1.2, cex.lab = 1.5, xlab = "reference gene candidate", yaxt = "n", xaxt  = "n")
 axis(2, cex.axis = 1.2)
+axis(1, cex.axis = 1.2, at = seq(1,15,2), labels = c(3,5,11,25,30,47,55,68))
+axis(1, cex.axis = 1.2, at = seq(2,15,2), labels = c(4,9,17,27,31,50,66))
+
 dev.off()
 ```
 
