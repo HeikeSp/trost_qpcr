@@ -1,0 +1,1539 @@
+---
+title: "Analysis of qRT-PCR data from TROST rewatering trials"
+author: "Heike Sprenger"
+date: "Monday, October 9, 2017"
+output:
+  html_document:
+    highlight: tango
+    number_section: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 4
+---
+
+# Set working directory  
+```{r set working directory}
+getwd()
+#setwd("D:/work/repos/trost_qpcr/")
+#setwd("X:/mpimp/repos/trost_qpcr")
+```
+
+
+# Load workspace, packages and scripts
+```{r load workspace, message=FALSE}
+# load packages
+library(knitr)
+library(reshape)
+library(pander)
+library(pcaMethods)
+library(ggplot2)
+library(corrplot)
+library(gplots)
+library(RColorBrewer)
+
+# set options for pander
+panderOptions('table.split.table', 200)
+
+# set options for knitr
+opts_chunk$set(fig.width=5, fig.height=5, cache=FALSE, highlight = TRUE, fig.show="asis")
+opts_knit$set(root.dir = '../')
+
+# load workspace
+#load("qpcr_data_rewatering.RData")
+```
+
+
+# Source R functions
+```{r source R functions}
+source("../functions/colors.R")
+source("../functions/names.R")
+source("../functions/func_prep_pca.R")
+source("../functions/func_pca_plots.R")
+source("../functions/RemoveFactors_function.R")
+source("../functions/func_anova.R")
+source("../functions/func_boxplot.R")
+
+# load functions
+source("../functions/func_load_functions_metabolite_data_analysis.R")
+```
+
+
+# Load sample information and modify them
+```{r load sample information}
+samplelist <- read.table("input/rewatering/samplelist.txt", header = T, sep="\t")
+head(samplelist)
+levels(samplelist$trial)
+
+samplelist$sample_time <- interaction(samplelist$sampling, samplelist$harvest, sep = "/")
+levels(samplelist$sample_time)
+samplelist$sample_time <- factor(samplelist$sample_time, levels = levels(samplelist$sample_time)[c(3,1,4,2)])
+
+levels(samplelist$cultivar)
+samplelist$cultivar <- factor(samplelist$cultivar, levels = levels(samplelist$cultivar)[c(3,1,2,4)])
+
+# interaction of sample_time and cultivar
+samplelist$sample_time_cultivar <- interaction(samplelist$sample_time, samplelist$cultivar, sep = "-")
+levels(samplelist$sample_time_cultivar)
+
+# write.table(samplelist, "output/rewatering/samplelist.txt", sep="\t")
+```
+
+
+# Load functional annotation
+```{r load functional annotation}
+assoc_pgsc <- read.table("../trost_transcriptomics/data/PGSC_DM_v3.4_g2t2c2p2func_edit.txt", sep="\t")
+colnames(assoc_pgsc) <- c("pgsc_dmg", "pgsc_dmt", "pgsc_dmc", "pgsc_dmp", "func")
+head(assoc_pgsc)
+```
+
+
+# Load qpcr raw data (after cleaning) and modify them
+```{r load data}
+rawdata_cleaned <- read.table("input/rewatering/rawdata.txt", header = T, sep = "\t", row.names = 1, check.names = F)
+dim(rawdata_cleaned)
+# rows: 48 genes
+# columns: 192 samples and 2 additional columns with gene names
+
+# order by rownames = DMG id
+rawdata_cleaned <- rawdata_cleaned[order(rownames(rawdata_cleaned)), ]
+
+# merge cleaned rawdata with functional annotation
+rawdata_cleaned_merge <- merge(rawdata_cleaned[,1:2], assoc_pgsc, by.x = "row.names", by.y = "pgsc_dmg", sort = F)
+colnames(rawdata_cleaned_merge)[1] <- "pgsc_dmg"
+
+# transpose data (only Ct values, without name)
+rawdata_cleaned_ct <- t(rawdata_cleaned[,-c(1,2)])
+dim(rawdata_cleaned_ct)
+# rows: 192 samples
+# columns: 48 genes
+
+# replace "Undetermined" by NA
+rawdata_cleaned_ct [which(rawdata_cleaned_ct == "Undetermined")] <- NA
+sum(is.na(rawdata_cleaned_ct))
+
+# order rows ( = samples) according to samplelist
+rawdata_cleaned_ct <- rawdata_cleaned_ct[as.character(samplelist$sample_id),]
+
+# convert columns to numeric
+rawdata_cleaned_ct <- apply(rawdata_cleaned_ct, 2, function(x) as.numeric(x))
+rownames(rawdata_cleaned_ct) <- as.character(samplelist$sample_id)
+
+# values without HK genes 
+HK_index <- which(colnames(rawdata_cleaned_ct) %in% c("PGSC0003DMG400014497", 
+                                                      "PGSC0003DMG400011723", 
+                                                      "PGSC0003DMG400031374", 
+                                                      "PGSC0003DMG400026492"))
+
+rawdata_cleaned_ct_woHK <- as.data.frame(rawdata_cleaned_ct[,-HK_index])
+dim(rawdata_cleaned_ct_woHK)
+# 192 samples, 44 genes
+class(rawdata_cleaned_ct_woHK)
+class(rawdata_cleaned_ct_woHK$PGSC0003DMG400000066)
+
+#write.table(colnames(rawdata_cleaned_ct), "output/rewatering/PGSC_DMT_identifier_qpcr_marker_HK.txt", sep="\t")
+```
+
+
+# Plot ct values
+```{r plot ct values}
+# boxplot of all ct-values vs. genes, last 4 are HG genes
+boxplot.matrix(rawdata_cleaned_ct, use.cols = TRUE, 
+               col = c(rep("lightblue", 44), rep("grey", 4)), 
+               las = 2, cex.lab = 0.8, ylab = "raw CT value")
+
+# plot of HKG
+pairs(rawdata_cleaned_ct[,HK_index])
+
+#class(rawdata_cleaned_ct)
+p <- ggplot(as.data.frame(rawdata_cleaned_ct), aes(PGSC0003DMG400014497, PGSC0003DMG400011723))
+p + geom_point(alpha =1/3, size=5) 
+
+# histogram of ct-values per gene
+pdf("figures/rewatering/hist_rawdata_cleaned_ct.pdf")
+for (i in 1:44){
+hist(rawdata_cleaned_ct_woHK[,i], breaks = 30, col = "grey", 
+     main = colnames(rawdata_cleaned_ct_woHK)[i])
+}
+dev.off()
+```
+
+
+# Calculate mean of 4 housekeeping genes per sample
+```{r calculate mean of 4 housekeeping genes per sample}
+housekeeping_mean_all <- apply(rawdata_cleaned_ct[,HK_index], 1, mean, na.rm=TRUE)
+head(housekeeping_mean_all)
+
+# without HK4 !
+# HK_index_part <- which(colnames(rawdata_cleaned_ct) %in% c("PGSC0003DMT400068117", 
+#                                                            "PGSC0003DMT400037585", 
+#                                                            "PGSC0003DMT400080569"))
+# housekeeping_mean <- apply(rawdata_cleaned_ct[,HK_index_part], 1, mean)
+```
+
+
+# Calculate delta Ct: ``CT_gene - mean(CT_HK)``
+```{r calculate delta Ct}
+delta_ct <- matrix(1, nrow = nrow(rawdata_cleaned_ct_woHK), ncol = ncol(rawdata_cleaned_ct_woHK))
+colnames(delta_ct) <- colnames(rawdata_cleaned_ct_woHK)
+rownames(delta_ct) <- rownames(rawdata_cleaned_ct_woHK)
+
+for (i in 1:nrow(rawdata_cleaned_ct_woHK)){
+  for (j in 1:ncol(rawdata_cleaned_ct_woHK)){
+    delta_ct[i,j] <- rawdata_cleaned_ct_woHK[i,j] - housekeeping_mean_all[i]
+    }
+  }
+```
+
+
+# Calculate 2 to the power of minus delta Ct
+```{r calculate 2 to the power of minus delta Ct}
+two_minus_delta_ct <- 2^-(delta_ct)
+hist(two_minus_delta_ct, breaks=50, col="grey")
+
+# log 10 transformation of normalized values (2 to the power of minus delta Ct)
+log_norm_ct <- log10(two_minus_delta_ct)
+hist(log_norm_ct, col="grey", breaks=50)
+# low values correpond to low expression in comparison to HK genes (e.g. CT 40)
+# high values correpond to high expression in comparison to HK genes (e.g. CT 20)
+
+# log 2 transformation
+log2_norm_ct <- log2(two_minus_delta_ct)
+log2_norm_ct[1:5,1:5]
+two_minus_delta_ct[1:5,1:5]
+
+# export expression data
+write.table(two_minus_delta_ct, "output/rewatering/two_minus_delta_ct.txt", sep="\t")
+write.table(log_norm_ct, "output/rewatering/log_norm_ct.txt", sep="\t")
+write.table(log2_norm_ct, "output/rewatering/log2_norm_ct.txt", sep="\t")
+```
+
+
+# Compare RNA-Seq results (FPKM values) to qRT-PCR results for marker genes
+
+## Get PGSC information for marker genes (with/without HKG)
+```{r get PGSC information for marker genes}
+# get DMG identifier
+assoc_pgsc_dmg <- unique(rawdata_cleaned_merge$pgsc_dmg)
+length(assoc_pgsc_dmg)
+
+# without HKG
+assoc_pgsc_dmg_woHK <- assoc_pgsc_dmg[-HK_index]
+length(assoc_pgsc_dmg_woHK)
+
+# # get DMT identifier
+# assoc_pgsc_dmt <- droplevels(as.factor(rawdata_cleaned_merge$pgsc_dmt))
+# 
+# # without HKG
+# assoc_pgsc_dmt_woHK <- droplevels(assoc_pgsc_dmt[-HK_index])
+# length(assoc_pgsc_dmt_woHK)
+# 
+# PGSC table for marker genes (with/without HKG)
+assoc_pgsc_marker_HK <- unique(assoc_pgsc[which(assoc_pgsc$pgsc_dmg %in% assoc_pgsc_dmg), c(1,5)])
+assoc_pgsc_marker_woHK <- unique(assoc_pgsc[which(assoc_pgsc$pgsc_dmg %in% assoc_pgsc_dmg_woHK), c(1,5)])
+
+# order PGSC table by DMG identifier
+assoc_pgsc_marker_woHK <- assoc_pgsc_marker_woHK[order(assoc_pgsc_marker_woHK$pgsc_dmg),]
+assoc_pgsc_marker_HK <- assoc_pgsc_marker_HK[order(assoc_pgsc_marker_HK$pgsc_dmg),]
+
+dim(assoc_pgsc_marker_HK)
+dim(assoc_pgsc_marker_woHK)
+
+# add column for ID + function
+assoc_pgsc_marker_HK$Name <- paste0(assoc_pgsc_marker_HK$pgsc_dmg, " (", assoc_pgsc_marker_HK$func, ")")
+assoc_pgsc_marker_woHK$Name <- paste0(assoc_pgsc_marker_woHK$pgsc_dmg, " (", assoc_pgsc_marker_woHK$func, ")")
+```
+
+## load RNA=Seq samplelist
+```{r load RNA=Seq samplelist}
+samplelist_ordered <- read.table("../trost_transcriptomics/output/samplelist_modified.txt", sep="\t", header=T)
+samplelist_ordered_g <- subset(samplelist_ordered, cultivation=="greenhouse")
+
+samplelist_qpcr <- droplevels(subset(samplelist_ordered_g, trial_name %in% c("MPITest1.2", "MPITest2")))
+```
+
+
+## Load FPKM values
+```{r Load FPKM values}
+# load fpkm values (on gene level) --> DMG identifier!
+fpkm_genes <- read.table("../trost_transcriptomics/data/genes_FPKMs.txt", header = TRUE, sep = "\t", row.names = 1)
+colnames(fpkm_genes) <- tolower(colnames(fpkm_genes))
+
+fpkm_qpcr <- fpkm_genes[, as.character(samplelist_qpcr$sample_name)]
+
+# with housekeeping genes
+fpkm_qpcr_marker_HK <- fpkm_qpcr[which(rownames(fpkm_qpcr) %in% assoc_pgsc_dmg), ]
+
+# without housekeeping genes
+fpkm_qpcr_marker_woHK <- fpkm_qpcr[which(rownames(fpkm_qpcr) %in% assoc_pgsc_dmg_woHK),]
+```
+
+
+## Load VSD values
+```{r Load VSD values}
+# load fpkm values (on gene level) --> DMG identifier!
+vsd_greenhouse <- read.table("../trost_transcriptomics/output/deseq2_vsd_greenhouse.txt", 
+                             header = TRUE, sep = "\t", row.names = 1, check.names = F)
+colnames(vsd_greenhouse) <- samplelist_ordered_g$sample_name
+
+vsd_qpcr <- vsd_greenhouse[,as.character(samplelist_qpcr$sample_name)]
+
+# with housekeeping genes
+vsd_qpcr_marker_HK <- vsd_qpcr[which(rownames(vsd_qpcr) %in% assoc_pgsc_dmg), ]
+
+# without housekeeping genes
+vsd_qpcr_marker_woHK <- vsd_qpcr[which(rownames(vsd_qpcr) %in% assoc_pgsc_dmg_woHK),]
+```
+
+## PCA of VSD data
+```{r PCA of VSD data}
+pca_vsd <- func_prep_pca(t(vsd_qpcr_marker_woHK), 
+                         scale_method = "pareto", 
+                         center_option = FALSE, 
+                         pc_number = 5, 
+                         pca_method = "rnipals")
+
+# treatment effect
+palette(cols_treatment)
+func_5pairs_plot(pca_vsd, samplelist_qpcr, 
+                 "condition", 19, "treatment effect (pareto scaling, rnipals)")
+
+func_pca_plot(pca_vsd, 1, 2, samplelist_qpcr, "condition", 19, 1, 
+              "bottomright", 0.8, maintext = "treatment effect (pareto scaling, rnipals)")
+
+# cultivar effect
+palette(cols_cultivar_check)
+func_5pairs_plot(pca_vsd, samplelist_qpcr, 
+                 "cultivar", 19, "treatment effect (pareto scaling, rnipals)")
+
+func_pca_plot(pca_vsd, 2, 3, samplelist_qpcr, "cultivar", 19, 1, 
+              "bottomleft", 0.8, maintext = "treatment effect (pareto scaling, rnipals)")
+```
+
+
+
+## Combine PGSC annotation with FPKM mean for marker genes
+```{r combine PGSC annotation with FPKM mean for marker genes}
+# with HKG
+fpkm_qpcr_marker_HK_mean <- apply(fpkm_qpcr_marker_HK, 1, mean)
+vsd_qpcr_marker_HK_mean <- apply(vsd_qpcr_marker_HK, 1, mean)
+fpkm_qpcr_marker_HK_mean <- fpkm_qpcr_marker_HK_mean[order(names(fpkm_qpcr_marker_HK_mean))]
+vsd_qpcr_marker_HK_mean <- vsd_qpcr_marker_HK_mean[order(names(vsd_qpcr_marker_HK_mean))]
+assoc_pgsc_marker_HK <- data.frame(assoc_pgsc_marker_HK, 
+                                   fpkm_mean = fpkm_qpcr_marker_HK_mean,
+                                   vsd_mean = vsd_qpcr_marker_HK_mean)
+
+# without HKG
+fpkm_qpcr_marker_woHK_mean <- apply(fpkm_qpcr_marker_woHK, 1, mean)
+vsd_qpcr_marker_woHK_mean <- apply(vsd_qpcr_marker_woHK, 1, mean)
+fpkm_qpcr_marker_woHK_mean <- fpkm_qpcr_marker_woHK_mean[order(names(fpkm_qpcr_marker_woHK_mean))]
+vsd_qpcr_marker_woHK_mean <- vsd_qpcr_marker_woHK_mean[order(names(vsd_qpcr_marker_woHK_mean))]
+assoc_pgsc_marker_woHK <- data.frame(assoc_pgsc_marker_woHK, 
+                                fpkm_mean = fpkm_qpcr_marker_woHK_mean,
+                                vsd_mean = vsd_qpcr_marker_woHK_mean)
+
+# order by DMT identifier 
+# afterwards, not before, because odering by DMG is different!
+assoc_pgsc_marker_HK <- assoc_pgsc_marker_HK[order(assoc_pgsc_marker_HK$pgsc_dmg),]
+assoc_pgsc_marker_woHK <- assoc_pgsc_marker_woHK[order(assoc_pgsc_marker_woHK$pgsc_dmg),]
+```
+
+
+## Calculate mean of qRT-PCR results
+```{r calculate mean of qRT-PCR results}
+# all cultivars
+rawdata_cleaned_ct_woHK_mean <- apply(rawdata_cleaned_ct_woHK, 2, mean, na.rm=T)
+rawdata_cleaned_ct_HK_mean <- apply(rawdata_cleaned_ct, 2, mean, na.rm=T)
+log2_norm_ct_mean <- apply(log2_norm_ct, 2, mean, na.rm=T)
+
+# only check cultivars
+# log2_norm_ct_check <- subset(log2_norm_ct, samplelist$cultivar %in% c("Alegria", "Desiree", "Milva", "Saturna"))
+# log2_norm_ct_check_mean <- apply(log2_norm_ct_check, 2, mean, na.rm=T)
+```
+
+
+## Combine PGSC annotation, FPKM mean, VSD mean and Ct mean
+```{r combine PGSC annotation, FPKM mean, VSD mean and Ct mean}
+assoc_pgsc_marker_woHK = data.frame(assoc_pgsc_marker_woHK, 
+                                    ct_mean = rawdata_cleaned_ct_woHK_mean,
+                                    log2_norm_ct_mean)
+                                    #log2_norm_ct_check_mean)
+
+assoc_pgsc_marker_HK = data.frame(assoc_pgsc_marker_HK, 
+                                  ct_mean = rawdata_cleaned_ct_HK_mean)
+
+
+# correlation test
+cor.test(assoc_pgsc_marker_HK$ct_mean, log2(assoc_pgsc_marker_HK$fpkm_mean))
+
+# FPKM mean
+cor.test(assoc_pgsc_marker_woHK$log2_norm_ct_mean, log2(assoc_pgsc_marker_woHK$fpkm_mean))
+
+# VSD mean
+cor.test(assoc_pgsc_marker_woHK$log2_norm_ct_mean, assoc_pgsc_marker_woHK$vsd_mean)
+```
+
+
+## Plot FPKM vs log2 norm Ct values (for check cultivars)
+```{r plot FPKM vs log2 norm Ct values (for check cultivars)}
+fit <- lm( log2(assoc_pgsc_marker_woHK$fpkm_mean) ~ assoc_pgsc_marker_woHK$log2_norm_ct_mean)
+
+# plot(assoc_pgsc_marker_woHK$ct_mean, log2(assoc_pgsc_marker_woHK$fpkm_mean), pch=19)
+plot(assoc_pgsc_marker_woHK$log2_norm_ct_mean, log2(assoc_pgsc_marker_woHK$fpkm_mean), pch=19)
+
+pdf("figures/rewatering/qpcr_vs_rnaseq.pdf", width=6, height=6)
+par(mar=c(4.5, 4.5, 3, 0.5))
+plot(assoc_pgsc_marker_woHK$log2_norm_ct_mean, 
+     log2(assoc_pgsc_marker_woHK$fpkm_mean), 
+     pch = 19, cex.lab = 1.5, cex.axis = 1.2, cex = 1.5,
+     xlab = bquote("qRT-PCR:" ~ log[2] ~ (2^{-Delta~Ct})), 
+     ylab = bquote("RNA-Seq:" ~ log[2] ~ "FPKM"),
+     main = "mean per gene across all samples")
+abline(fit, lwd = 2, col = "darkgrey")
+text(x = -2.5, y = 7.5, "p-value: 2.2e-3", cex = 1.5)
+text(x = -2.5, y = 7, "Pearson's correlation: 0.45", cex = 1.5)
+dev.off()
+```
+
+
+## Plot VSD vs log2 norm Ct values (for check cultivars)
+```{r plot VSD vs log2 norm Ct values (for check cultivars)}
+fit <- lm(assoc_pgsc_marker_woHK$vsd_mean ~ assoc_pgsc_marker_woHK$log2_norm_ct_mean)
+
+# plot(assoc_pgsc_marker_woHK$ct_mean, log2(assoc_pgsc_marker_woHK$fpkm_mean), pch=19)
+plot(assoc_pgsc_marker_woHK$log2_norm_ct_mean, assoc_pgsc_marker_woHK$vsd_mean, pch=19)
+
+pdf("figures/rewatering/qpcr_vs_rnaseq_vsd.pdf", width=6, height=6)
+par(mar=c(4.5, 4.5, 3, 0.5))
+plot(assoc_pgsc_marker_woHK$log2_norm_ct_mean, 
+     assoc_pgsc_marker_woHK$vsd_mean, 
+     pch = 19, cex.lab = 1.5, cex.axis = 1.2, cex = 1.5,
+     xlab = bquote("qRT-PCR:" ~ log[2] ~ (2^{-Delta~Ct})), 
+     ylab = "RNA-Seq: VSD",
+     main = "mean per gene across all samples")
+abline(fit, lwd = 2, col = "darkgrey")
+text(x = -2.5, y = 9.5, "p-value: 1.4e-3", cex = 1.5)
+text(x = -2.5, y = 9, "Pearson's correlation: 0.467", cex = 1.5)
+dev.off()
+```
+
+# PCA
+```{r PCA}
+log_norm_ct_pareto_rnipals <- func_prep_pca(log_norm_ct, 
+                                            scale_method = "pareto", 
+                                            center_option = FALSE, 
+                                            pc_number = 5, 
+                                            pca_method = "rnipals")
+
+log_norm_ct_none_rnipals <- func_prep_pca(log_norm_ct, 
+                                          scale_method = "none", 
+                                          center_option = FALSE, 
+                                          pc_number = 5, 
+                                          pca_method = "rnipals")
+
+log_norm_ct_none_ppca <- func_prep_pca(log_norm_ct, 
+                                       scale_method = "none", 
+                                       center_option = FALSE, 
+                                       pc_number = 5, 
+                                       pca_method = "ppca")
+
+
+# export completeObs for later use by RandomForest
+write.table(log_norm_ct_none_rnipals@completeObs, "output/rewatering/log_norm_ct_none_rnipals_completeObs.txt", sep="\t")
+```
+
+
+## PCA plots: no scaling, rnipals
+```{r PCA plots: no scaling, rnipals}
+pdf("figures/rewatering/pca_log_norm_ct_no_scaling.pdf")
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, 
+                 "treatment", 19, "treatment effect (no scaling, rnipals)")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist, "treatment", 19, 1, 
+              "bottomright", 0.8, maintext = "treatment effect (no scaling, rnipals)")
+
+# sample time
+palette(cols_sample_time2)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, 
+                 "sampling", 19, "sample time effect (no scaling, rnipals)")
+func_pca_plot(log_norm_ct_none_rnipals, 4, 5, samplelist, "sampling", 19, 1, 
+              "bottomright", 0.8, maintext = "sample time effect (no scaling, rnipals)")
+
+# sample time 2
+palette(cols_sample_time)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, 
+                 "sample_time", 19, "sample time effect (no scaling, rnipals)")
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist, "sample_time", 19, 1, 
+              "topleft", 0.8, maintext = "sample time effect (no scaling, rnipals)")
+
+# trial
+palette(heike_palette_2)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, 
+                 "trial", 19, "trial effect (no scaling, rnipals)")
+
+func_pca_plot(log_norm_ct_none_rnipals, 1, 2, samplelist, "trial", 19, 1, 
+              "topleft", 0.8, maintext = "trial effect (no scaling, rnipals)",
+              legend.text = c("MPI-MP test 1.2", "MPI-MP test 2"))
+
+# cultivar
+palette(cols_cultivar_check)
+func_5pairs_plot(log_norm_ct_none_rnipals, samplelist, 
+                 "cultivar", 19, "cultivar effect (no scaling, rnipals)")
+
+func_pca_plot(log_norm_ct_none_rnipals, 1, 3, samplelist, "cultivar", 19, 1, 
+              "topleft", 0.8, maintext = "trial effect (no scaling, rnipals)")
+
+plot(log_norm_ct_none_rnipals@scores[,1], 
+     log_norm_ct_none_rnipals@scores[,3], 
+     col = samplelist$cultivar, pch = 19)
+
+text(log_norm_ct_none_rnipals@scores[,1], 
+     log_norm_ct_none_rnipals@scores[,3], 
+     labels = samplelist$cultivar, cex = 0.7)
+
+dev.off()
+```
+
+
+## PCA plots: scaling, rnipals
+```{r PCA plots: scaling, rnipals}
+pdf("figures/rewatering/pca_log_norm_ct_scaling_rnipals.pdf")
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist, 
+                 "treatment", 19, "treatment effect (pareto scaling, rnipals)")
+func_pca_plot(log_norm_ct_pareto_rnipals, 1, 2, samplelist, "treatment", 19, 1.5, 
+              "bottomleft", 1, maintext = "treatment effect (pareto scaling, rnipals)")
+
+# sample time
+palette(cols_sample_time2)
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist, 
+                 "sampling", 19, "sample time effect (no scaling, rnipals)")
+func_pca_plot(log_norm_ct_pareto_rnipals, 4, 5, samplelist, "sampling", 19, 1, 
+              "bottomright", 0.8, maintext = "sample time effect (no scaling, rnipals)")
+
+# sample time 2
+palette(cols_sample_time)
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist, 
+                 "sample_time", 19, "sample time effect (no scaling, rnipals)")
+func_pca_plot(log_norm_ct_pareto_rnipals, 1, 2, samplelist, "sample_time", 19, 1, 
+              "topleft", 0.8, maintext = "sample time effect (no scaling, rnipals)")
+
+func_pca_plot_sym(pca_res = log_norm_ct_pareto_rnipals, dim1 = 1, dim2 = 2, 
+                  factors = samplelist, color_factor = "sample_time", 
+                  symbol_size = 1.3, symbols = c(19,17), symbol_factor = "treatment", 
+                  pos1 = "bottomleft", leg1 = 0.8, pos2 = "topleft", leg2 = 0.8,
+                  maintext = "sample time x treatment effect (no scaling, rnipals)")
+
+func_pca_plot_sym(pca_res = log_norm_ct_pareto_rnipals, dim1 = 1, dim2 = 3, 
+                  factors = samplelist, color_factor = "sample_time", 
+                  symbol_size = 1, symbols = c(19,17), symbol_factor = "treatment", 
+                  pos1 = "bottomleft", leg1 = 0.8, pos2 = "topleft", leg2 = 0.8,
+                  maintext = "sample time x treatment effect (no scaling, rnipals)")
+
+# trial
+palette(heike_palette_2)
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist, 
+                 "trial", 19, "trial effect (pareto scaling, rnipals)")
+func_pca_plot(log_norm_ct_pareto_rnipals, 1, 2, samplelist, "trial", 19, 1, 
+              "bottomright", 0.8, maintext = "trial effect (pareto scaling, rnipals)")
+
+# cultivar
+palette(cols_cultivar_check)
+func_5pairs_plot(log_norm_ct_pareto_rnipals, samplelist,
+                 "cultivar", 19, "cultivar effect (pareto scaling, rnipals)")
+
+func_pca_plot(log_norm_ct_pareto_rnipals, 1, 3, samplelist, "cultivar", 19, 1.5, 
+              "topleft", 0.8, maintext = "cultivar effect (pareto scaling, rnipals)")
+
+func_pca_plot_sym(log_norm_ct_pareto_rnipals, 1, 3, samplelist, "cultivar", c(19,17), 
+              "treatment", 1.5, "topleft", 0.8, "bottomleft", 0.8, "cultivar / treatment effect")
+
+plot(log_norm_ct_pareto_rnipals@scores[,1], 
+     log_norm_ct_pareto_rnipals@scores[,3], 
+     col = samplelist$cultivar, pch = 19, 
+     xlab = "PC1 (25.5%)", ylab = "PC3 (11.1%)")
+
+text(log_norm_ct_pareto_rnipals@scores[,1], 
+     log_norm_ct_pareto_rnipals@scores[,3], 
+     labels = samplelist$cultivar, cex = 0.7)
+
+dev.off()
+```
+
+## PCA plots: scaling, ppca
+```{r PCA plots: scaling, ppca}
+pdf("figures/rewatering/pca_log_norm_ct_scaling_ppca.pdf")
+# treatment
+palette(cols_treatment)
+func_5pairs_plot(log_norm_ct_none_ppca, samplelist, 
+                 "treatment", 19, "treatment effect (no scaling, ppca)")
+
+# trial
+palette(heike_palette_2)
+func_5pairs_plot(log_norm_ct_none_ppca, samplelist, 
+                 "trial", 19, "trial effect (no scaling, ppca)")
+
+func_pca_plot(log_norm_ct_none_ppca, 1, 2, 
+              samplelist, "trial", 19, 1, 
+              "bottomright", 0.8, 
+              maintext = "trial effect (no scaling, ppca)")
+
+# cultivar
+palette(cols_cultivar_check)
+func_5pairs_plot(log_norm_ct_none_ppca, samplelist, 
+                 "cultivar", 19, "cultivar effect (no scaling, ppca)")
+# separation of some cultivars in PC2 vs. PC3
+func_pca_plot(log_norm_ct_none_ppca, 2, 3, 
+              samplelist, "cultivar", 19, 1, 
+              "bottomright", 0.8, 
+              maintext = "cultivar effect (no scaling, ppca)")
+
+plot(log_norm_ct_none_ppca@scores[,2], 
+     log_norm_ct_none_ppca@scores[,3], 
+     col = samplelist$cultivar, pch = 19)
+
+text(log_norm_ct_none_ppca@scores[,2], 
+     log_norm_ct_none_ppca@scores[,3], 
+     labels = samplelist$cultivar, cex = 0.7)
+dev.off()
+
+palette("default")
+```
+
+# Correlation plot
+```{r corrplot}
+# cor_log_norm_ct <- cor(log_norm_ct,use="complete")
+# write.table(cor_log_norm_ct, "output/rewatering/cor_log_norm_ct.txt", sep="\t")
+# 
+# pdf("figures/rewatering/cor_log_norm_ct.pdf", width=10, height=10)
+# corrplot(cor_log_norm_ct, method="color", order="hclust", hclust.method="average", tl.col="black", tl.cex=0.5)
+# dev.off()
+```
+
+
+# Remove Factors by ANOVA models using R script by Jan Lisec
+```{r normalize (Remove Factors)}
+# levels(samplelist$trial)
+# levels(samplelist$treatment)
+# levels(samplelist$cultivar)
+# 
+# # treatment included
+# log_norm_ct_2 <- apply(log_norm_ct, 2, RemoveFactors, sam=samplelist, 
+#                               facs=c("cultivar", "trial"), 
+#                               keep=c("cultivar"))
+# 
+# # treatment NOT included!
+# log_norm_ct_3 <- apply(log_norm_ct, 2, RemoveFactors, sam=samplelist, 
+#                               facs=c("cultivar", "trial", "treatment"), 
+#                               keep=c("cultivar", "treatment"))
+```
+
+
+## PCA after Remove Factors
+```{r PCA after Remove Factors}
+
+# log_norm_ct_pareto_rnipals_2 <- func_prep_pca(log_norm_ct_2, 
+#                                               scale_method = "pareto", 
+#                                               center_option = FALSE, 
+#                                               pc_number = 5, 
+#                                               pca_method = "rnipals")
+# 
+# log_norm_ct_pareto_rnipals_3 <- func_prep_pca(log_norm_ct_3, 
+#                                               scale_method = "pareto", 
+#                                               center_option = FALSE, 
+#                                               pc_number = 5, 
+#                                               pca_method = "rnipals")
+# 
+# pdf("figures/rewatering/pca_log_norm_ct_2.pdf")
+# 
+# # pareto scaling, rnipals
+# # treatment
+# palette("default")
+# pairs(log_norm_ct_pareto_rnipals_2@scores[,1:5], 
+#       col = samplelist$treatment, pch=19) # --> separation in PC1 vs.PC3
+# 
+# plot(log_norm_ct_pareto_rnipals_2@scores[,1], 
+#      log_norm_ct_pareto_rnipals_2@scores[,3], 
+#      col = samplelist$treatment, pch = 19, 
+#      xlab = "PC1 (25%)", ylab = "PC3 (8%)")
+# legend("bottomright", levels(samplelist$treatment), fill=1:2)
+# 
+# # trial
+# pairs(log_norm_ct_pareto_rnipals_2@scores[,1:5], 
+#       col = samplelist$trial, pch=19)
+# 
+# plot(log_norm_ct_pareto_rnipals_2@scores[,1], 
+#      log_norm_ct_pareto_rnipals_2@scores[,2], 
+#      col = samplelist$trial, pch = 19, 
+#      xlab = "PC1 (25%)", ylab = "PC2 (8%)")
+# 
+# legend("topleft", levels(samplelist$trial), fill=1:5)
+# 
+# # cultivars
+# palette(rainbow(34))
+# pairs(log_norm_ct_pareto_rnipals_2@scores[,1:5], 
+#       col = samplelist$cultivar, pch = 19)
+# 
+# plot(log_norm_ct_pareto_rnipals_2@scores[,3], 
+#      log_norm_ct_pareto_rnipals_2@scores[,4], 
+#      col=samplelist$cultivar, pch = 19, 
+#      xlab = "PC1 (25%)", ylab = "PC4 (5%)")
+# 
+# text(log_norm_ct_pareto_rnipals_2@scores[,3], 
+#      log_norm_ct_pareto_rnipals_2@scores[,4], 
+#      labels = samplelist$cultivar, cex=1)
+# 
+# dev.off()
+# palette("default")
+```
+
+
+
+
+
+
+
+## Create heatmap with 6 column types
+* Interaction of treatment (2) * trial (3) -> 6
+
+```{r create heatmap with 6 column types}
+dim(log_norm_ct)
+
+samplelist_field <- droplevels( samplelist[which(samplelist$cultivation=="field"), ])
+samplelist_field_treatment_trial <- interaction(samplelist_field$treatment, samplelist_field$trial)
+
+mat_log_norm_ct <- as.matrix(t(log_norm_ct[which(samplelist$cultivation=="field"), ]))
+
+# colnames(mat_log_norm_ct) 
+
+distance_log_norm_ct = dist(mat_log_norm_ct, method = "euclidian")
+cluster_log_norm_ct = hclust(distance_log_norm_ct, method = "average")
+
+distance_log_norm_ct_samples = dist(t(mat_log_norm_ct), method = "euclidian")
+cluster_log_norm_ct_samples = hclust(distance_log_norm_ct_samples, method = "average")
+
+#mycluster <- cutree(cluster, h=max(cluster$height)/1.5)
+mycluster_tolerance <- cutree(cluster_log_norm_ct, k=5)
+#mycluster_tolerance[cluster_log_norm_ct$order]
+
+# 5 colors for different gene clusters
+mycolor <- brewer.pal(5, "Set2")
+mycolor <- mycolor[as.vector(mycluster_tolerance)]
+
+# get 6 colors for 6 different sample types
+mycolor_samples <- brewer.pal(6, "Paired")
+mycolor_samples <- mycolor_samples[as.numeric(samplelist_field_treatment_trial)]
+
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+
+col_breaks = c(seq(-2,-0.51,length=100), # for blue
+               seq(-0.5,0.5,length=100), # for white
+               seq(0.51,2,length=100)) # for red
+```
+
+
+## Plot heatmap with 6 column types
+```{r plot heatmap with 6 column types}
+pdf("figures/rewatering/heatmap_qpcr_field.pdf", width=40, height=12)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_log_norm_ct,
+  main = "", # heat map title
+  density.info = "none",  # turns off density plot inside color legend
+  trace = "none",         # turns off trace lines inside the heat map
+  margins = c(8,21),     # widens margins around plot
+  keysize = 1.8,
+  cexRow = 1.5,
+  cexCol = 1.5,
+  lhei = c(0.6, 4),
+  col = my_palette,       # use on color palette defined earlier 
+  breaks = col_breaks,    # enable color transition at specified limits
+  RowSideColors = mycolor,
+  ColSideColors = mycolor_samples,
+  Rowv = as.dendrogram(cluster_log_norm_ct),
+  Colv = as.dendrogram(cluster_log_norm_ct_samples),
+  #labCol = c("GH sensitive", "GH tolerant", "field sensitive", "field tolerant"),
+  srtCol = 270,
+  adjCol = c(0,1),
+  scale = "row",
+  dendrogram = "both")     # only draw a row dendrogram
+
+dev.off()
+```
+
+
+## Create heatmap with 34 column types according to cultivars
+```{r create heatmap with 34 column types}
+
+mycolor_samples2 <- rainbow(34)
+mycolor_samples2 <- mycolor_samples2[as.numeric(samplelist_field$cultivar)]
+
+mat_log_norm_ct2 <- mat_log_norm_ct
+colnames(mat_log_norm_ct2) <- samplelist_field$cultivar
+```
+
+
+## Plot heatmap with 34 column types according to cultivars
+```{r plot heatmap with 34 column types}
+pdf("figures/rewatering/heatmap_qpcr_field2.pdf", width=40, height=12)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_log_norm_ct,
+  main = "", # heat map title
+  density.info = "none",  # turns off density plot inside color legend
+  trace = "none",         # turns off trace lines inside the heat map
+  margins = c(8,21),     # widens margins around plot
+  keysize = 1.8,
+  cexRow = 1.5,
+  cexCol = 1.5,
+  lhei = c(0.6, 4),
+  col = my_palette,       # use on color palette defined earlier 
+  breaks = col_breaks,    # enable color transition at specified limits
+  RowSideColors = mycolor,
+  ColSideColors = mycolor_samples2,
+  Rowv = as.dendrogram(cluster_log_norm_ct),
+  Colv = as.dendrogram(cluster_log_norm_ct_samples),
+  labCol = samplelist_field$cultivar,
+  srtCol = 270,
+  adjCol = c(0,1),
+  scale = "row",
+  dendrogram = "both")     # only draw a row dendrogram
+
+dev.off()
+```
+
+
+# ANOVA with 2 factors
+```{r ANOVA with 2 factors}
+pval <- 0.05
+
+res_anova_adj <- func_anova_2fac(normalized_values = two_minus_delta_ct, 
+                                 #normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "cultivar",
+                                 threshold = pval,
+                                 analyte_names = colnames(log_norm_ct))
+
+res_anova_adj_ia <- func_anova_2fac_ia(normalized_values = two_minus_delta_ct, 
+                                       #normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "cultivar",
+                                 threshold = pval,
+                                 analyte_names = colnames(log_norm_ct))
+
+res_anova_adj_3fac <- func_anova_3fac(normalized_values = two_minus_delta_ct, 
+                                      #normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "cultivar",
+                                 factor3 = "sample_time",
+                                 threshold = pval,
+                                 analyte_names = colnames(log_norm_ct))
+
+res_anova_adj_ia_treat_time <- func_anova_2fac_ia(normalized_values = two_minus_delta_ct, 
+                                                  #normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "sample_time",
+                                 threshold = pval,
+                                 analyte_names = colnames(log_norm_ct))
+
+res_anova_adj_ia_treat_time_cultivar <- func_anova_2fac_ia(normalized_values = two_minus_delta_ct, 
+                                                  #normalized_values = log_norm_ct, 
+                                 trial_factors = samplelist, 
+                                 factor1 = "treatment", 
+                                 factor2 = "sample_time_cultivar",
+                                 threshold = pval,
+                                 analyte_names = colnames(log_norm_ct))
+```
+
+
+# Boxplots per gene
+## Boxplots per gene: cultivar effect
+```{r boxplots per gene: cultivar effect}
+pdf("figures/rewatering/boxplots_per_gene_per_cultivar_log10.pdf")
+func_boxplot_1fac(normalized_values = log_norm_ct, 
+                  trial_factors = samplelist, 
+                  factor = "cultivar", 
+                  res_anova_adj = res_anova_adj, 
+                  cols = cols_cultivar_check, 
+                  analyte_names = assoc_pgsc_marker_woHK$Name,
+                  ylab_text = bquote(log[10] ~ (2^{-Delta~Ct})))
+dev.off()
+
+pdf("figures/rewatering/boxplots_per_gene_per_cultivar_orig.pdf")
+func_boxplot_1fac(normalized_values = two_minus_delta_ct, 
+                  trial_factors = samplelist, 
+                  factor = "cultivar", 
+                  res_anova_adj = res_anova_adj, 
+                  cols = cols_cultivar_check, 
+                  analyte_names = assoc_pgsc_marker_woHK$Name,
+                  ylab_text = expression(2^{-Delta~Ct}))
+dev.off()
+```
+
+## Boxplots per gene: cultivar x treatment effect
+```{r boxplots per gene: cultivar x treatment effect}
+pdf("figures/rewatering/boxplots_per_gene_per_cultivar_treatment.pdf")
+par(mar=c(7, 4.1, 7, 2.1))
+func_boxplot_2fac(normalized_values = two_minus_delta_ct, 
+                  trial_factors = samplelist, 
+                  factor1 = "treatment",
+                  factor2 = "cultivar",
+                  res_anova_adj = res_anova_adj_ia, 
+                  cols = cols_treatment, 
+                  analyte_names = assoc_pgsc_marker_woHK$Name,
+                  names_factors = names_treatment_cultivar_reordered,
+                  ylab_text = expression(2^{-Delta~Ct}))
+dev.off()
+```
+
+## Boxplots per gene: treatment x sample time effect
+```{r boxplots per gene: treatment x sample time effect}
+pdf("figures/rewatering/boxplots_per_gene_per_treatment_time.pdf")
+par(mar=c(7, 4.1, 7, 2.1))
+func_boxplot_2fac(normalized_values = two_minus_delta_ct, 
+                  trial_factors = samplelist, 
+                  factor1 = "treatment",
+                  factor2 = "sample_time",
+                  res_anova_adj = res_anova_adj_ia_treat_time, 
+                  cols = cols_treatment_sample_time, 
+                  analyte_names = assoc_pgsc_marker_woHK$Name,
+                  names_factors = names_treatment_sample_time_2,
+                  ylab_text = expression(2^{-Delta~Ct}))
+dev.off()
+```
+
+
+## Boxplots per gene: treatment x sample time x cultivar effect
+```{r boxplots per gene: treatment x sample time x cultivar effect}
+pdf("figures/rewatering/boxplots_per_gene_per_treatment_time_cultivar.pdf")
+par(mar=c(7, 4.1, 7, 2.1))
+func_boxplot_2fac(normalized_values = two_minus_delta_ct, 
+                  trial_factors = samplelist, 
+                  factor1 = "treatment",
+                  factor2 = "sample_time_cultivar",
+                  res_anova_adj = res_anova_adj_ia_treat_time_cultivar, 
+                  cols = cols_treatment_sample_time, 
+                  analyte_names = assoc_pgsc_marker_woHK$Name,
+                  #names_factors = names_treatment_sample_time_2,
+                  ylab_text = expression(2^{-Delta~Ct}))
+dev.off()
+```
+
+## Boxplots per gene: treatment x sample time x cultivar effect 2
+```{r Boxplots per gene: treatment x sample time x cultivar effect 2}
+data_info <- data.frame(samplelist, two_minus_delta_ct)
+goi <- colnames(two_minus_delta_ct)
+goi_name <- assoc_pgsc_marker_woHK$Name
+names(goi_name) <- goi
+
+pdf("figures/rewatering/boxplots_per_gene_per_treatment_time_cultivar2.pdf", width = 8, height = 6)
+for(i in goi){
+  p <- ggplot(data_info, aes_string(x = "sample_time", y = i, fill = "treatment")) + 
+    geom_boxplot() + ggtitle(goi_name[i]) +
+    facet_wrap(~ cultivar, ncol = 2) + 
+    scale_fill_manual(values=cols_treatment)
+  plot(p)}
+dev.off()
+
+pdf("figures/rewatering/boxplots_per_gene_per_treatment_time_cultivar3.pdf", width = 8, height = 6)
+for(i in goi){
+  p <- ggplot(data_info, aes_string(x = "cultivar", y = i, fill = "treatment")) + 
+    geom_boxplot() + ggtitle(goi_name[i]) +
+    facet_wrap(~ sample_time, ncol = 2) + 
+    scale_fill_manual(values=cols_treatment)
+  plot(p)}
+dev.off()
+```
+
+
+# t-test
+## t-test: control vs. stress, separately for sample_time
+```{r t-test control vs. stress}
+pval <- 0.05
+res_ttest_treatment <- func_ttest_treatment_all(two_minus_delta_ct, samplelist, pval)
+# 27
+
+res_ttest_early_before <- func_ttest_treatment(two_minus_delta_ct, 
+                                               samplelist, fac1 = "sample_time", val1 = "early/before", pval)
+res_ttest_early_after <- func_ttest_treatment(two_minus_delta_ct, 
+                                              samplelist, fac1 = "sample_time", val1 = "early/after", pval)
+res_ttest_late_before <- func_ttest_treatment(two_minus_delta_ct, 
+                                              samplelist, fac1 = "sample_time", val1 = "late/before", pval)
+res_ttest_late_after <- func_ttest_treatment(two_minus_delta_ct, 
+                                             samplelist, fac1 = "sample_time", val1 = "late/after", pval)
+
+# res_ttest_alegria <- func_ttest_treatment(two_minus_delta_ct, samplelist, fac1 = "cultivar", val1 = "Alegria", pval)
+# res_ttest_milva <- func_ttest_treatment(two_minus_delta_ct, samplelist, fac1 = "cultivar", val1 = "Milva", pval)
+# res_ttest_desiree <- func_ttest_treatment(two_minus_delta_ct, samplelist, fac1 = "cultivar", val1 = "Desiree", pval)
+# res_ttest_saturna <- func_ttest_treatment(two_minus_delta_ct, samplelist, fac1 = "cultivar", val1 = "Saturna", pval)
+
+# across all cultivars and sample times
+res_ttest_idx <- order(res_ttest_treatment)
+head(assoc_pgsc_marker_woHK[res_ttest_idx, "name"], n = 20)
+
+# union across all sample_times
+union_sample_time <- sort(union(union(which(res_ttest_early_before < pval), 
+                                      which(res_ttest_early_after < pval)), 
+                                union(which(res_ttest_late_before < pval), 
+                                      which(res_ttest_late_after < pval))))
+length(union_sample_time)
+# 29
+
+length( intersect(which(res_ttest_treatment < pval), union_sample_time)) # 23
+length( setdiff(which(res_ttest_treatment < pval), union_sample_time)) # 4
+length( setdiff(union_sample_time, which(res_ttest_treatment < pval))) # 6
+
+res_ttest_treatment_specific <- setdiff(which(res_ttest_treatment < pval), union_sample_time)
+
+length( union(which(res_ttest_treatment < pval), union_sample_time)) # 33
+```
+
+
+## t-test: control vs. stress, separately for sample_time and cultivar
+```{r t-test: control vs. stress, separately for sample_time and cultivar}
+res_ttest <- matrix(NA, ncol = 16, nrow = 44)
+colnames(res_ttest) <- levels(samplelist$sample_time_cultivar)
+rownames(res_ttest) <- assoc_pgsc_marker_woHK$Name
+
+for(i in levels(samplelist$sample_time_cultivar)){
+  
+  res_ttest[,i] <- func_ttest_treatment(two_minus_delta_ct, samplelist, 
+                                        fac1 = "sample_time_cultivar", val1 = i, pval)
+}
+```
+
+
+
+# Calculate log2FC: up or down regulated
+```{r calculate log2FC}
+# across all cultivars!
+log2FC_treatment <- func_log2FC_1fac(two_minus_delta_ct, samplelist, average_func = median)
+
+# per cultivar
+log2FC_early_before <- func_log2FC_2fac(two_minus_delta_ct, samplelist, average_func = median,
+                                   fac1 = "sample_time", fac1_val = "early/before",
+                                   fac2 = "treatment", fac2_val1 = "control", fac2_val2 = "drought stress")
+
+log2FC_early_after <- func_log2FC_2fac(two_minus_delta_ct, samplelist, average_func = median,
+                                   fac1 = "sample_time", fac1_val = "early/after",
+                                   fac2 = "treatment", fac2_val1 = "control", fac2_val2 = "drought stress")
+
+log2FC_late_before <- func_log2FC_2fac(two_minus_delta_ct, samplelist, average_func = median,
+                                   fac1 = "sample_time", fac1_val = "late/before",
+                                   fac2 = "treatment", fac2_val1 = "control", fac2_val2 = "drought stress")
+
+log2FC_late_after <- func_log2FC_2fac(two_minus_delta_ct, samplelist, average_func = median,
+                                   fac1 = "sample_time", fac1_val = "late/after",
+                                   fac2 = "treatment", fac2_val1 = "control", fac2_val2 = "drought stress")
+```
+
+## Up or down regulated
+```{r up or down regulated}
+# get a factor with the value up or down for all analytes
+log2FC_up_down_treatment <- func_log2FC_up_down(log2FC_treatment)
+
+log2FC_up_down_early_before <- func_log2FC_up_down(log2FC_early_before)
+log2FC_up_down_early_after <- func_log2FC_up_down(log2FC_early_after)
+log2FC_up_down_late_before <- func_log2FC_up_down(log2FC_late_before)
+log2FC_up_down_late_after <- func_log2FC_up_down(log2FC_late_after)
+
+# get a list with ALL analytes that are up or down
+log2FC_dir_early_before <- func_log2FC_dir(log2FC_early_before)
+log2FC_dir_early_after <- func_log2FC_dir(log2FC_early_after)
+log2FC_dir_late_before <- func_log2FC_dir(log2FC_late_before)
+log2FC_dir_late_after <- func_log2FC_dir(log2FC_late_after)
+
+# get a list with significantly changed analytes that are up or down
+log2FC_dir_sig_early_before <- func_log2FC_dir_sig(log2FC_dir_early_before, res_ttest_early_before, pval)
+log2FC_dir_sig_early_after <- func_log2FC_dir_sig(log2FC_dir_early_after, res_ttest_early_after, pval)
+log2FC_dir_sig_late_before <- func_log2FC_dir_sig(log2FC_dir_late_before, res_ttest_late_before, pval)
+log2FC_dir_sig_late_after <- func_log2FC_dir_sig(log2FC_dir_late_after, res_ttest_late_after, pval)
+```
+
+
+## Volcano plot: log2FC vs. t-test p-value
+```{r volcano plot: log2FC vs. t-test p-value}
+pdf("figures/rewatering/volcano_plots_sample_time.pdf", 6, 6)
+par(mar=c(4.5, 4.5, 0.5, 0.5))
+
+func_volcano_plot(res_ttest_early_before, log2FC_early_before)
+func_volcano_plot(res_ttest_early_after, log2FC_early_after)
+func_volcano_plot(res_ttest_late_before, log2FC_late_before)
+func_volcano_plot(res_ttest_late_after, log2FC_late_after)
+
+dev.off()
+```
+
+
+## Combine t-test results with log2FC
+```{r combine t-test results with log2FC}
+head(assoc_pgsc_marker_woHK$Name)
+res_ttest_all <- cbind(assoc_pgsc_marker_woHK$Name,
+                       res_ttest_early_before, log2FC_early_before, log2FC_up_down_early_before,
+                       res_ttest_early_after, log2FC_early_after, log2FC_up_down_early_after, 
+                       res_ttest_late_before, log2FC_late_before, log2FC_up_down_late_before,
+                       res_ttest_late_after, log2FC_late_after, log2FC_up_down_late_after,
+                       res_ttest_treatment)
+
+write.table(res_ttest_all, "output/rewatering/res_ttest_control_vs_stress.txt", sep="\t", col.names=NA, row.names=T)
+
+res_ttest_p <- cbind(p_early_before = res_ttest_early_before, 
+                     p_early_after = res_ttest_early_after,
+                     p_late_before = res_ttest_late_before, 
+                     p_late_after = res_ttest_late_after)
+
+head(res_ttest_p)
+rownames(res_ttest_p) <- assoc_pgsc_marker_woHK$Name
+write.table(res_ttest_p, "output/rewatering/res_ttest_p.txt", sep="\t")
+```
+
+
+## Compare lists of up/down regulated analytes
+```{r compare lists of up/down regulated analytes}
+# compare early/before and early/after
+# UP
+func_compare_2lists_up(log2FC_dir_sig_early_before, log2FC_dir_sig_early_after)
+# DOWN
+func_compare_2lists_down(log2FC_dir_sig_early_before, log2FC_dir_sig_early_after)
+
+
+# compare late/before and late/after
+# UP
+func_compare_2lists_up(log2FC_dir_sig_late_before, log2FC_dir_sig_late_after)
+# DOWN
+func_compare_2lists_down(log2FC_dir_sig_late_before, log2FC_dir_sig_late_after)
+```
+
+
+## Indices of not-significantly regulated analytes
+```{r indices of not-significantly regulated analytes}
+not_sig_early <- intersect(which(res_ttest_early_before > pval), which(res_ttest_early_after > pval))
+not_sig_late <- intersect(which(res_ttest_late_before > pval), which(res_ttest_late_after > pval))
+not_sig <- intersect(not_sig_early, not_sig_late)
+not_sig <- intersect(not_sig, which(res_ttest_treatment > pval))
+length(not_sig)
+# 11 transcripts are not changed at any timepoint, 33 remain
+write.table(not_sig, "output/rewatering/not_sig_regulated_analytes.txt", sep="\t")
+```
+
+
+# Aggregate normalized values for heatmap
+## Aggregate normalized values for heatmap: per treatment and sample time
+```{r aggregate normalized values: per treatment and sample time}
+# for matrix with NAs using 2 factors (treatment, sample time)
+# MEDIAN
+values_norm_median <- func_agg_2fac(two_minus_delta_ct, samplelist, "sample_time", "treatment", 
+                                    median, assoc_pgsc_marker_woHK)
+dim(values_norm_median)
+# 8 samples (rows), 45 (1 sample, 44 transcripts, columns)
+
+# export TRANSPOSED matrix for heatmap
+values_norm_median_t <- t(values_norm_median[,-1])
+colnames(values_norm_median_t) <- values_norm_median$sample
+dim(values_norm_median_t)
+# 44 transcripts (rows), 8 samples (columns)
+
+head(values_norm_median_t)
+
+write.table(values_norm_median_t, 
+            "output/rewatering/two_minus_delta_ct_median_for_heatmap.txt", 
+            sep = "\t", quote = F, col.names = NA, row.names = T)
+```
+
+
+## Aggregate normalized values for heatmap: per cultivar, treatment and sample time
+```{r aggregate normalized values: per cultivar, treatment and sample time}
+# for matrix with NAs using 3 factors (treatment, sample time, cultivar)
+# MEDIAN
+values_norm_median_3fac <- func_agg_3fac(two_minus_delta_ct, samplelist, 
+                                         "sample_time", "cultivar","treatment", 
+                                         mean, #median
+                                         assoc_pgsc_marker_woHK)
+dim(values_norm_median_3fac)
+# 32 samples (rows), 45 (1 sample, 44 transcripts, columns)
+
+# export TRANSPOSED matrix for heatmap
+values_norm_median_3fac_t <- t(values_norm_median_3fac[,-1])
+colnames(values_norm_median_3fac_t) <- values_norm_median_3fac$sample
+dim(values_norm_median_3fac_t)
+# 44 transcripts (rows), 32 samples (columns)
+
+values_norm_median_3fac_t[1:5, 1:2]
+
+write.table(values_norm_median_3fac_t, 
+            "output/rewatering/two_minus_delta_ct_median_for_heatmap_3fac.txt", 
+            sep = "\t", quote = F, col.names = NA, row.names = T)
+```
+
+# Reverse log-transformation
+```{r reverse log-transformation}
+# values_norm_median_rev <- 10^(values_norm_median[,-1]) # without sample names
+# dim(values_norm_median_rev)
+# # 8 samples (rows), 164 analytes (columns)
+# 
+# ## samples are in rows, analytes in columns
+# ## for transformation: samples should be in columns and analytes in rows --> row-wise median is median over all samples of 1 analyte
+# 
+# # transpose matrix
+# values_norm_median_rev_t <- t(values_norm_median_rev)
+# dim(values_norm_median_rev_t)
+# # 164 analytes (rows), 8 samples (columns)
+# colnames(values_norm_median_rev_t) <- values_norm_median$sample
+```
+
+
+# Calculation of log-median-ratio
+```{r calculation of log-median-ratio}
+# values_norm_median_rev_transformed <- func_log_transform(values_norm_median_rev_t)
+# dim(values_norm_median_rev_transformed)
+# # 164 analytes, 8 samples
+# 
+# # export matrix for heatmap
+# write.table(values_norm_median_rev_transformed, 
+#             "output/rewatering/values_norm_log10_median_rev_transformed_for_heatmap.txt", 
+#             sep = "\t", quote = F, col.names = NA, row.names = T)
+```
+
+
+# Calculation of log2-fold-change
+## Calculation of log2-fold-change: per sample time
+```{r calculation of log2-fold-change: per sample time}
+# manual calculation
+colnames(values_norm_median_t)[c(1,5)]
+log2(values_norm_median_t[1,5] / values_norm_median_t[1,1])
+
+colnames(values_norm_median_t)[c(4,8)]
+log2(values_norm_median_t[1,8] / values_norm_median_t[1,4])
+
+values_norm_median_t_log2FC <- log2_fold_change(values_norm_median_t)
+dim(values_norm_median_t_log2FC)
+range(values_norm_median_t_log2FC, na.rm=TRUE)
+
+# change colnames ("trial", "genotype_name", "sample_time")
+colnames(values_norm_median_t_log2FC) <- levels(factors$sample_time)
+
+head(values_norm_median_t_log2FC)
+
+# export matrix for heatmap
+write.table(values_norm_median_t_log2FC, 
+            "output/merge_mpi_test_rewatering/values_norm_log10_median_rev_t_log2FC_for_heatmap.txt", 
+            sep = "\t", quote = F, col.names = NA, row.names = T)
+
+write.table(values_norm_median_t_log2FC, 
+            "output/merge_mpi_test_rewatering/log2FC_treatment_per_sampletime.txt", 
+            sep = "\t", quote = F, row.names = T)
+```
+
+
+## Calculation of log2-fold-change: per sample time and cultivar
+```{r calculation of log2-fold-change: per sample time and cultivar}
+# manual calculation
+colnames(values_norm_median_3fac_t)[c(1,17)]
+log2(values_norm_median_3fac_t[1,17] / values_norm_median_3fac_t[1,1])
+
+colnames(values_norm_median_3fac_t)[c(4,20)]
+log2(values_norm_median_3fac_t[1,20] / values_norm_median_3fac_t[1,4])
+
+values_norm_median_3fac_t_log2FC <- log2_fold_change(values_norm_median_3fac_t)
+dim(values_norm_median_3fac_t_log2FC)
+range(values_norm_median_3fac_t_log2FC, na.rm=TRUE)
+
+# change colnames ("trial", "genotype_name", "sample_time")
+colnames(values_norm_median_3fac_t_log2FC) <- gsub(".control", "", colnames(values_norm_median_3fac_t_log2FC))
+head(values_norm_median_3fac_t_log2FC)
+
+# export matrix for heatmap
+write.table(values_norm_median_3fac_t_log2FC, 
+            "output/rewatering/log2FC_treatment_per_sampletime_cultivar.txt", 
+            sep = "\t", quote = F, row.names = T)
+```
+
+
+# Change not significant values to NA
+```{r change not significant values to NA}
+dim(values_norm_median_t_log2FC)
+dim(res_ttest_p)
+
+# log2FC per sample time
+log2FC_sample_time_sig <- values_norm_median_t_log2FC
+
+for (i in 1:44){
+  for (j in 1:4){
+    if(is.na(res_ttest_p[i,j])){
+      log2FC_sample_time_sig[i,j] <- NA
+    }
+    else if (res_ttest_p[i,j] > pval){
+      log2FC_sample_time_sig[i,j] <- NA
+    }
+  }
+}
+#log2FC_sample_time_sig [union_sample_time,]
+
+
+# log2FC per sample time and cultivar
+log2FC_sample_time_cultivar_sig <- values_norm_median_3fac_t_log2FC
+
+for (i in 1:44){
+  for (j in 1:16){
+    if(is.na(res_ttest[i,j])){
+      log2FC_sample_time_cultivar_sig[i,j] <- NA
+    }
+    else if (res_ttest[i,j] > pval){
+      log2FC_sample_time_cultivar_sig[i,j] <- NA
+    }
+  }
+}
+```
+
+
+# Significant changes for heatmap
+- p < 0.05 *
+- p < 0.01 **
+- p < 0.001 ***
+```{r significant changes for heatmap}
+res_ttest_p_m <- melt(res_ttest_p[union_sample_time,])
+res_ttest_p_m$value3 <- cut(res_ttest_p_m$value,
+                            breaks = c(-Inf, 0.001, 0.01, 0.05),
+                            label = c("***", "**", "*")) 
+
+signif2 <- matrix(res_ttest_p_m$value3, ncol = 4)
+
+
+# for t-test of stress effect for sample time and cultivar
+res_ttest_melt <- melt(res_ttest)
+
+res_ttest_melt$value3 <- cut(res_ttest_melt$value,
+                            breaks = c(-Inf, 0.001, 0.01, 0.05),
+                            label = c("***", "**", "*")) 
+
+signif_sample_time_cultivar <- matrix(res_ttest_melt$value3, ncol = 16)
+
+res_ttest_melt_ <- res_ttest_melt[,-3]
+colnames(res_ttest_melt_)[1:2] <- c("id","variable")
+res_ttest_melt_cast <- cast(res_ttest_melt_, id ~ variable)
+```
+
+
+# Heatmap
+## heatmap of log2FC per sample time
+```{r heatmap of log2FC per sample time}
+mat_data <- as.matrix(values_norm_median_t_log2FC[union_sample_time,])
+#mat_data <- as.matrix(values_norm_median_t_log2FC) # ALL!
+
+distance = dist(mat_data, method = "euclidian")
+cluster = hclust(distance, method = "average")
+
+#mycluster <- cutree(cluster, h=max(cluster$height)/1.5)
+mycluster <- cutree(cluster, k=4)
+#mycluster[cluster$order]
+
+mycolor <- brewer.pal(8, "Set2")
+mycolor <- mycolor[as.vector(mycluster)]
+
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+
+col_breaks = c(seq(-3,-0.81,length=100), # for blue
+               seq(-0.8,0.8,length=100), # for white
+               seq(0.81,3,length=100)) # for red
+
+#pdf("figures/rewatering/heatmap_log2FC_signif.pdf", width = 8, height = 10)
+dpi <- 300
+png("figures/rewatering/heatmap_log2FC_signif.png", width=12*dpi, height=15*dpi, res = dpi)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_data,
+  cellnote = signif2,  # same data set for cell labels
+  notecex=1.2, # numeric scaling factor for cellnote items
+  colsep=0:ncol(mat_data), 
+  rowsep=0:nrow(mat_data),
+  sepwidth=c(0.01,0.05),
+  sepcolor="black",
+  main = "", # heat map title
+  notecol="black",      # change font color of cell labels to black
+  density.info="none",  # turns off density plot inside color legend
+  trace="none",         # turns off trace lines inside the heat map
+  margins =c(6,30),     # widens margins around plot
+  keysize=1.5,
+  cexRow=1.3,
+  cexCol=1.5,
+  labCol = c("early/\n before", "early/\n after", "late/\n before", "late/\n after"),
+  lhei=c(0.6, 4),
+  col=my_palette,       # use on color palette defined earlier 
+  breaks=col_breaks,    # enable color transition at specified limits
+  RowSideColors=mycolor,
+  Rowv=as.dendrogram(cluster),
+  dendrogram="row",     # only draw a row dendrogram
+  Colv="NA",
+  adjCol = c(1,0.5))            # turn off column clustering```
+
+dev.off()
+```
+
+### heatmap reordered
+```{r heatmap REORDERED}
+mat_data <- as.matrix(values_norm_median_t_log2FC[union_sample_time,])
+
+distance <- dist(mat_data, method = "euclidian")
+cluster <- hclust(distance, method = "average")
+
+cluster2 <- dendsort(cluster, type = "average") 
+
+#mycluster <- cutree(cluster, h=max(cluster$height)/1.5)
+mycluster <- cutree(cluster2, k=4)
+mycluster[cluster2$order]
+
+mycolor <- brewer.pal(8, "Set2")
+mycolor <- mycolor[as.vector(mycluster)]
+
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+
+# col_breaks = c(seq(-1,-0.3,length=100), # for blue
+#                seq(-0.3,0.3,length=100), # for white
+#                seq(0.3,2,length=100)) # for red
+
+col_breaks = c(seq(-3,-0.81,length=100), # for blue
+               seq(-0.8,0.8,length=100), # for white
+               seq(0.81,3,length=100)) # for red
+
+pdf("figures/rewatering/heatmap_log2FC_signif_reordered.pdf", width = 8, height = 10)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_data,
+  cellnote = signif2,  # same data set for cell labels
+  notecex=1.0, # numeric scaling factor for cellnote items
+  colsep=0:ncol(mat_data), 
+  rowsep=0:nrow(mat_data),
+  sepwidth=c(0.01,0.05),
+  sepcolor="black",
+  main = "", # heat map title
+  notecol="black",      # change font color of cell labels to black
+  density.info="none",  # turns off density plot inside color legend
+  trace="none",         # turns off trace lines inside the heat map
+  margins =c(6,20),     # widens margins around plot
+  keysize=1.5,
+  cexRow=0.8,
+  cexCol=1.3,
+  labCol = c("early/\n before", "early/\n after", "late/\n before", "late/\n after"),
+  lhei=c(0.6, 4),
+  col=my_palette,       # use on color palette defined earlier 
+  breaks=col_breaks,    # enable color transition at specified limits
+  RowSideColors=mycolor,
+  Rowv=as.dendrogram(cluster2),
+  dendrogram="row",     # only draw a row dendrogram
+  Colv="NA",
+  adjCol = c(1,0.5))           # turn off column clustering
+
+dev.off()
+```
+
+
+## heatmap of log2FC per sample time and cultivar
+```{r heatmap of log2FC per sample time and cultivar}
+mat_data <- as.matrix(values_norm_median_3fac_t_log2FC)
+# change order of columns
+mat_data <- mat_data[,c(1,5,9,13, 2,6,10,14, 3,7,11,15, 4,8,12,16)]
+signif_sample_time_cultivar <- res_ttest_melt_cast[,c(8,6,7,9, 4,2,3,5, 16,14,15,17, 12,10,11,13)]
+
+distance = dist(mat_data, method = "euclidian")
+cluster = hclust(distance, method = "average")
+
+#mycluster <- cutree(cluster, h=max(cluster$height)/1.5)
+mycluster <- cutree(cluster, k=4)
+#mycluster[cluster$order]
+
+mycolor <- brewer.pal(8, "Set2")
+mycolor <- mycolor[as.vector(mycluster)]
+
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+
+col_breaks = c(seq(-5,-0.81,length=100), # for blue
+               seq(-0.8,0.8,length=100), # for white
+               seq(0.81,5,length=100)) # for red
+
+#pdf("figures/rewatering/heatmap_log2FC_sample_time_cultivar.pdf", width = 12, height = 10)
+dpi <- 300
+png("figures/rewatering/heatmap_log2FC_signif_sample_time_cultivar.png", width=12*dpi, height=10*dpi, res = dpi)
+
+lmat=rbind(4:3, 2:1)
+lhei=c(0.8, 4)
+lwid=c(1, 4)
+
+layout(mat = lmat, widths = lwid, heights = lhei)
+
+heatmap.2(mat_data,
+  cellnote = signif_sample_time_cultivar,  # same data set for cell labels
+  notecex=1.3, # numeric scaling factor for cellnote items
+  colsep=0:ncol(mat_data), 
+  rowsep=0:nrow(mat_data),
+  sepwidth=c(0.01,0.05),
+  sepcolor="black",
+  main = "", # heat map title
+  notecol="black",      # change font color of cell labels to black
+  density.info="none",  # turns off density plot inside color legend
+  trace="none",         # turns off trace lines inside the heat map
+  margins =c(7,25),     # widens margins around plot
+  keysize=1.5,
+  cexRow=1,
+  cexCol=1.3,
+  labCol = names_sample_time_cultivar,
+  lhei=c(0.6, 4),
+  col=my_palette,       # use on color palette defined earlier 
+  breaks=col_breaks,    # enable color transition at specified limits
+  RowSideColors=mycolor,
+  Rowv=as.dendrogram(cluster),
+  dendrogram="row",     # only draw a row dendrogram
+  Colv="NA",
+  adjCol = c(1,0.5))            # turn off column clustering```
+
+dev.off()
+```
+
+
+## export tables that contain only sig changed analytes (treatment effect)
+```{r export tables that contain only sig changed analytes}
+# only significantly changed analytes
+
+# 33 transcripts that changed either per sample_time or across all samples in t-test (control vs stress)
+write.table(values_norm_median_t_log2FC[-not_sig,], 
+            "output/rewatering/log2FC_for_heatmap_sig.txt", 
+            sep = "\t", quote = F, col.names = NA, row.names = T)
+
+# only 29 transcripts that changed per sample_time!
+write.table(values_norm_median_t_log2FC[union_sample_time,], 
+            "output/rewatering/log2FC_for_heatmap_sig_per_sample_time.txt", 
+            sep = "\t", quote = F, col.names = NA, row.names = T)
+```
+
+
+
+
+# Save workspace & SessionInfo
+```{r save workspace}
+save.image("qpcr_data_rewatering.RData")
+sessionInfo()
+```
