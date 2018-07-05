@@ -30,6 +30,7 @@ library(ggplot2)
 library(corrplot)
 library(gplots)
 library(RColorBrewer)
+library(tidyverse)
 
 # set options for pander
 panderOptions('table.split.table', 200)
@@ -147,7 +148,11 @@ HK_index <- which(colnames(rawdata_ct) %in% c("PGSC0003DMT400030611",
 
 rawdata_ct_woHK <- rawdata_ct[,-HK_index]
 dim(rawdata_ct_woHK)
-# 779 samples, 43 genes
+# 779 samples (subset of lines), 43 genes
+
+rawdata_ct_all_woHK <- rawdata_ct_all[,-HK_index]
+dim(rawdata_ct_all_woHK)
+# 803 samples (all lines), 43 genes
 ```
 
 
@@ -450,7 +455,11 @@ par(mar=c(5,4,4,2))
 # Calculate mean of 4 housekeeping genes per sample
 ```{r calculate mean of 4 housekeeping genes per sample}
 # mean of 4 housekeeping genes per sample
+# subset of lines (779 samples)
 housekeeping_mean_all <- apply(rawdata_ct[,HK_index], 1, mean, na.rm=TRUE)
+
+# all lines (803 samples)
+housekeeping_mean_all2 <- apply(rawdata_ct_all[,HK_index], 1, mean, na.rm=TRUE)
 
 # without HKG4 !
 # housekeeping_mean <- apply(rawdata_ct[,which(colnames(rawdata_ct) %in% c("PGSC0003DMT400068117", 
@@ -463,6 +472,7 @@ housekeeping_mean_all <- apply(rawdata_ct[,HK_index], 1, mean, na.rm=TRUE)
 
 # Calculate delta Ct: ``CT_gene - mean(CT_HK)``
 ```{r calculate delta Ct}
+# subset of lines (779 samples)
 delta_ct <- matrix(1, nrow=nrow(rawdata_ct_woHK), ncol=ncol(rawdata_ct_woHK))
 colnames(delta_ct) <- colnames(rawdata_ct_woHK)
 rownames(delta_ct) <- rownames(rawdata_ct_woHK)
@@ -470,6 +480,17 @@ rownames(delta_ct) <- rownames(rawdata_ct_woHK)
 for (i in 1:nrow(rawdata_ct_woHK)){
   for (j in 1:ncol(rawdata_ct_woHK)){
     delta_ct[i,j] <- rawdata_ct_woHK[i,j]-housekeeping_mean_all[i]
+    }
+}
+
+# all lines (803 samples):
+delta_ct_all <- matrix(1, nrow=nrow(rawdata_ct_all_woHK), ncol=ncol(rawdata_ct_all_woHK))
+colnames(delta_ct_all) <- colnames(rawdata_ct_all_woHK)
+rownames(delta_ct_all) <- rownames(rawdata_ct_all_woHK)
+
+for (i in 1:nrow(rawdata_ct_all_woHK)){
+  for (j in 1:ncol(rawdata_ct_all_woHK)){
+    delta_ct_all[i,j] <- rawdata_ct_all_woHK[i,j]-housekeeping_mean_all2[i]
     }
   }
 ```
@@ -481,6 +502,9 @@ two_minus_delta_ct <- 2^-(delta_ct)
 hist(two_minus_delta_ct, breaks=50, col="grey")
 # low values correpond to low expression in comparison to HK genes -> between 0 and 1
 # high values correpond to high expression in comparison to HK genes -> larger than 1
+
+# all lines (803 samples):
+two_minus_delta_ct_all <- 2^-(delta_ct_all)
 
 # log transform normalized values (2 to the power of minus delta Ct)
 log_norm_ct <- log10(two_minus_delta_ct)
@@ -903,6 +927,37 @@ write.table(cor_log_norm_ct, "output/valdis/cor_log_norm_ct.txt", sep="\t")
 pdf("figures/valdis/cor_log_norm_ct.pdf", width=10, height=10)
 corrplot(cor_log_norm_ct, method="color", order="hclust", hclust.method="average", tl.col="black", tl.cex=0.5)
 dev.off()
+```
+
+
+# Export supplemental data for TROST_select paper
+**use ``two_minus_delta_ct_all`` for supplemental table**
+
+```{r export supplemental data for TROST_select paper}
+dim(two_minus_delta_ct_all)
+dim(samplelist_all)
+
+two_minus_delta_ct_all_df <- as.data.frame(two_minus_delta_ct_all)
+two_minus_delta_ct_all_df$sampleID <- as.integer(rownames(two_minus_delta_ct_all_df))
+
+samplelist_supp <- 
+  samplelist_all %>%
+  select(trial, name, treatment, sampleID)
+
+# rename lines (EA to ea)
+samplelist_supp$lines <- str_replace(string = samplelist_supp$name, pattern = "EA", replacement = "ea")
+samplelist_supp$lines <- str_replace(string = samplelist_supp$lines, pattern = "AR", replacement = "ar")
+samplelist_supp$name <- NULL
+
+# rename trial to ID
+samplelist_supp$trial <- str_replace(string = samplelist_supp$trial, pattern = "MPI FGH 2014", replacement = "P2")
+samplelist_supp$trial <- str_replace(string = samplelist_supp$trial, pattern = "JKI Shelter 2014", replacement = "P3")
+
+two_minus_delta_ct_all_supp <- 
+  samplelist_supp %>%
+  left_join(two_minus_delta_ct_all_df, by = "sampleID")
+
+write.table(two_minus_delta_ct_all_supp, "output/valdis/two_minus_delta_ct_all_supp.txt", sep = "\t", row.names = F)
 ```
 
 
